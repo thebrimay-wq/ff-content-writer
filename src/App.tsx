@@ -7,17 +7,10 @@ import {
   streamMessage,
 } from './lib/api'
 import { SYSTEM_PROMPT } from './lib/systemPrompt'
-import ApiKeyModal from './components/ApiKeyModal'
 import OutputPanel from './components/OutputPanel'
 import Sidebar from './components/Sidebar'
 
 export default function App() {
-  const keyIsEnvConfigured = !!import.meta.env.VITE_ANTHROPIC_KEY
-  const [apiKey, setApiKey] = useState<string>(() => {
-    return import.meta.env.VITE_ANTHROPIC_KEY ?? localStorage.getItem('ff_api_key') ?? ''
-  })
-  const [showApiModal, setShowApiModal] = useState(false)
-
   const [contentType, setContentType] = useState('article')
   const [audience, setAudience] = useState('all')
   const [topic, setTopic] = useState('')
@@ -44,7 +37,7 @@ export default function App() {
 
       try {
         await streamMessage(
-          apiKey,
+          '',
           messages,
           SYSTEM_PROMPT,
           (chunk) => {
@@ -62,19 +55,15 @@ export default function App() {
         setIsGenerating(false)
       }
     },
-    [apiKey]
+    []
   )
 
   const handleGenerate = useCallback(() => {
-    if (!apiKey) {
-      setShowApiModal(true)
-      return
-    }
     const req: GenerateRequest = { contentType, audience, topic, notes }
     setLastRequest(req)
     const userMessage = buildUserMessage(req)
     runStream([{ role: 'user', content: userMessage }])
-  }, [apiKey, contentType, audience, topic, notes, runStream])
+  }, [contentType, audience, topic, notes, runStream])
 
   const handleRegenerate = useCallback(() => {
     if (!lastRequest) return
@@ -101,12 +90,6 @@ export default function App() {
     setIsGenerating(false)
   }, [])
 
-  const handleSaveApiKey = useCallback((key: string) => {
-    localStorage.setItem('ff_api_key', key)
-    setApiKey(key)
-    setShowApiModal(false)
-  }, [])
-
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
@@ -124,8 +107,6 @@ export default function App() {
     <div className="flex h-screen overflow-hidden bg-slate-50">
       <aside className="hidden md:flex w-[340px] min-w-[340px] flex-col bg-white border-r border-gray-100 overflow-y-auto">
         <Sidebar
-          apiKey={apiKey}
-          keyIsEnvConfigured={keyIsEnvConfigured}
           contentType={contentType}
           audience={audience}
           topic={topic}
@@ -135,7 +116,6 @@ export default function App() {
           onAudienceChange={setAudience}
           onTopicChange={setTopic}
           onNotesChange={setNotes}
-          onApiKeyClick={() => setShowApiModal(true)}
           onGenerate={handleGenerate}
         />
       </aside>
@@ -151,13 +131,6 @@ export default function App() {
           onClear={handleClear}
         />
       </main>
-      {showApiModal && !keyIsEnvConfigured && (
-        <ApiKeyModal
-          initialKey={apiKey}
-          onSave={handleSaveApiKey}
-          onClose={() => setShowApiModal(false)}
-        />
-      )}
     </div>
   )
 }
