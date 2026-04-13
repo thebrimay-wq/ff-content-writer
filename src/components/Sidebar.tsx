@@ -2,8 +2,6 @@ import { ChangeEvent, ReactNode } from 'react'
 import { AUDIENCE_LABELS, TYPE_LABELS } from '../lib/api'
 
 interface SidebarProps {
-  apiKey: string
-  keyIsEnvConfigured?: boolean
   contentType: string
   audience: string
   topic: string
@@ -13,7 +11,6 @@ interface SidebarProps {
   onAudienceChange: (v: string) => void
   onTopicChange: (v: string) => void
   onNotesChange: (v: string) => void
-  onApiKeyClick: () => void
   onGenerate: () => void
 }
 
@@ -101,8 +98,6 @@ function SelectWrapper({ value, onChange, options, disabled }: SelectWrapperProp
 }
 
 export default function Sidebar({
-  apiKey,
-  keyIsEnvConfigured = false,
   contentType,
   audience,
   topic,
@@ -112,7 +107,6 @@ export default function Sidebar({
   onAudienceChange,
   onTopicChange,
   onNotesChange,
-  onApiKeyClick,
   onGenerate,
 }: SidebarProps) {
   const canGenerate = topic.trim().length > 0 && !isGenerating
@@ -124,19 +118,6 @@ export default function Sidebar({
         <span className="font-bold text-[15px] tracking-tight text-gray-900">
           FF Content Writer
         </span>
-        {!keyIsEnvConfigured && (
-          <button
-            onClick={onApiKeyClick}
-            className={[
-              'text-[11px] font-semibold px-2.5 py-1 rounded-md transition-colors',
-              apiKey
-                ? 'text-emerald-600 bg-emerald-50 hover:bg-emerald-100'
-                : 'text-gray-400 bg-gray-100 hover:bg-gray-200',
-            ].join(' ')}
-          >
-            {apiKey ? 'Key set' : 'API key'}
-          </button>
-        )}
       </div>
 
       {/* Form fields */}
@@ -207,11 +188,6 @@ export default function Sidebar({
               'Generate content'
             )}
           </button>
-          {!apiKey && (
-            <p className="text-[11px] text-gray-300 text-center">
-              Set your API key above to get started
-            </p>
-          )}
         </div>
       </div>
     </div>
