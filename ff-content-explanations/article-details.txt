@@ -1,0 +1,14 @@
+The contentType property is the partition key for the Azure Cosmos DB data store that holds all of our content. article is the default and should remain as it's critical to functionality.
+
+_legacyId should not be modifiable.
+
+The type property should control which kind of editor is being displayed (quiz, checklist, article, etc.)
+
+Other content types such as video or calculator inform the front end as to what asset to pull, generally from the referenceLink property.
+
+Attached are the models for each property.
+
+Checklist.cs -> checklist
+Quiz.cs -> quiz
+Bite_Sized.cs (array of BiteSizedSection) -> biteSized
+Expert_Insights.cs (array of ExpertInsightsSection) -> expertInsights

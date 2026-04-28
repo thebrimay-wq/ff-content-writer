@@ -1,0 +1,567 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>FF Content Writer — CMS Features Mockup</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  html, body { height: 100%; }
+  body { font-family: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif; }
+  /* Mirror the app's existing palette */
+  .ff-navy { color: #063853; }
+  .ff-navy-bg { background-color: #063853; }
+  .ff-navy-hover:hover { background-color: #04293D; }
+  .ff-body { color: #383838; }
+  .chip {
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 2px 8px; border-radius: 9999px;
+    font-size: 11px; font-weight: 600;
+    background: #E6EEF3; color: #063853;
+  }
+  .chip button { opacity: .6; }
+  .chip button:hover { opacity: 1; }
+  details > summary { list-style: none; cursor: pointer; }
+  details > summary::-webkit-details-marker { display: none; }
+  /* Status pill colors */
+  .st-draft     { background:#F3F4F6; color:#6B7280; }
+  .st-review    { background:#FEF3C7; color:#92400E; }
+  .st-approved  { background:#DBEAFE; color:#1E40AF; }
+  .st-published { background:#D1FAE5; color:#065F46; }
+  .st-trash     { background:#FEE2E2; color:#991B1B; }
+</style>
+</head>
+<body class="bg-slate-50 text-gray-900">
+
+<div class="flex flex-col h-screen overflow-hidden">
+
+  <!-- Top-level tabs (existing navigation) -->
+  <div class="flex items-center justify-between px-6 h-12 shrink-0 bg-white border-b border-gray-100">
+    <div class="flex items-end gap-1">
+      <button class="relative px-4 h-10 text-[13px] font-semibold ff-navy flex items-center gap-2">
+        Editing
+        <span class="absolute inset-x-3 -bottom-px h-[2px] ff-navy-bg rounded-full"></span>
+      </button>
+      <button class="px-4 h-10 text-[13px] font-semibold text-gray-400 hover:text-gray-600 flex items-center gap-2">
+        Library
+        <span class="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-gray-100 text-gray-500">20</span>
+      </button>
+      <span class="ml-2 text-[11px] text-gray-400 self-center pb-2">• Unsaved changes</span>
+    </div>
+    <div class="flex items-center gap-3 text-[11px] ff-body">
+      <span class="chip st-published">● Published</span>
+      <span>Last saved 2 min ago</span>
+    </div>
+  </div>
+
+  <!-- 3-panel workspace -->
+  <div class="flex flex-1 overflow-hidden">
+
+    <!-- LEFT: prompt inputs (unchanged from existing app) -->
+    <aside class="w-[340px] min-w-[340px] bg-white border-r border-gray-100 overflow-y-auto" style="padding:28px">
+      <div class="flex items-center justify-between mb-8">
+        <span class="font-bold text-[15px] tracking-tight">FF Content Writer</span>
+        <button class="text-[11px] font-semibold px-2.5 py-1 rounded-md text-emerald-600 bg-emerald-50">Key set</button>
+      </div>
+
+      <div class="flex flex-col gap-6">
+
+        <div class="flex flex-col gap-1.5">
+          <label class="text-[10px] font-bold tracking-widest uppercase ff-body">Content type</label>
+          <select class="w-full rounded-lg border border-gray-200 bg-white px-3.5 py-2.5 text-[14px]">
+            <option>Articles</option>
+            <option>Money Tips</option>
+            <option>Calculators</option>
+            <option>Checklists</option>
+            <option>Expert Insights</option>
+            <option>Infographics</option>
+            <option>Quizzes</option>
+            <option>User Stories</option>
+            <option>Videos</option>
+          </select>
+        </div>
+
+        <div class="flex flex-col gap-1.5">
+          <label class="text-[10px] font-bold tracking-widest uppercase ff-body">Who is this for?</label>
+          <select class="w-full rounded-lg border border-gray-200 bg-white px-3.5 py-2.5 text-[14px]">
+            <option>All Users</option>
+            <option>Crisis</option>
+            <option>Struggling</option>
+            <option>Planning</option>
+            <option>Optimizing</option>
+          </select>
+          <p class="text-[11px] ff-body">We'll adjust tone and depth automatically.</p>
+        </div>
+
+        <div class="flex flex-col gap-1.5">
+          <label class="text-[10px] font-bold tracking-widest uppercase ff-body">Topic</label>
+          <input type="text" value="Can and should you get life insurance on a child"
+            class="w-full rounded-lg border border-gray-200 px-3.5 py-2.5 text-[14px]" />
+        </div>
+
+        <div class="flex flex-col gap-1.5">
+          <label class="text-[10px] font-bold tracking-widest uppercase ff-body">Prompt notes (optional)</label>
+          <textarea rows="5"
+            class="w-full rounded-lg border border-gray-200 px-3.5 py-2.5 text-[14px] resize-none"
+            placeholder="Add stats, rough ideas, or paste existing content..."></textarea>
+          <p class="text-[11px] text-gray-400 leading-snug">Renamed from "Notes" — these are instructions to the model, separate from the document's own notes (which live on the Meta tab).</p>
+        </div>
+
+        <div class="flex gap-2 pt-2">
+          <button class="flex-1 h-11 rounded-lg font-bold text-[14px] text-white ff-navy-bg ff-navy-hover">
+            Generate content
+          </button>
+          <button class="h-11 px-4 rounded-lg text-[13px] font-semibold text-gray-500 border border-gray-200">Clear</button>
+        </div>
+
+      </div>
+    </aside>
+
+    <!-- CENTER: generated content (unchanged) -->
+    <main class="flex-1 flex flex-col min-w-0 bg-white overflow-hidden">
+      <div class="flex items-center gap-2 px-6 h-12 border-b border-gray-100 text-[12px] shrink-0">
+        <span class="chip">Article</span>
+        <span class="chip">Planning</span>
+        <span class="ml-auto text-gray-400">Cmd+S to save • Cmd+Enter to generate</span>
+      </div>
+
+      <div class="flex-1 overflow-y-auto px-10 py-8 prose prose-slate max-w-none">
+        <h1>Can and should you get life insurance on a child?</h1>
+        <p class="text-gray-500 italic">Few financial topics generate more mixed feelings than life insurance on a child. It's not widely understood, and the sales pitch often moves faster than the math.</p>
+        <p>Most children don't need life insurance. A policy exists to replace income, and children don't have income to replace. The case for child life insurance — when it exists at all — is about insurability: locking in a small policy now guarantees a child who later develops a health condition can still be insured as an adult.</p>
+        <h2>When a small policy makes sense</h2>
+        <ul>
+          <li>Family history of conditions that can affect future insurability</li>
+          <li>A burial/funeral buffer some parents want for peace of mind</li>
+          <li>Whole-life policies with modest cash value — rarely the best investment vehicle, but some families value the forced savings</li>
+        </ul>
+        <h2>When it almost certainly doesn't</h2>
+        <p>If you don't already have 10–12x your income in term life on the earning parents, fund that first. A parent's death is the catastrophic financial event a child needs insured — not the reverse.</p>
+      </div>
+
+      <div class="flex items-center justify-between px-6 h-14 border-t border-gray-100 shrink-0">
+        <div class="flex items-center gap-2">
+          <button class="h-9 px-4 rounded-lg text-[13px] font-semibold text-white ff-navy-bg ff-navy-hover">Save</button>
+          <button class="h-9 px-4 rounded-lg text-[13px] font-semibold text-gray-600 border border-gray-200">Regenerate</button>
+          <button class="h-9 px-4 rounded-lg text-[13px] font-semibold text-gray-500">Clear</button>
+        </div>
+        <div class="flex items-center gap-2">
+          <input type="text" placeholder="Refine this draft…" class="h-9 w-72 rounded-lg border border-gray-200 px-3 text-[13px]" />
+          <button class="h-9 px-3 rounded-lg text-[13px] font-semibold text-white ff-navy-bg">→</button>
+        </div>
+      </div>
+    </main>
+
+    <!-- RIGHT: NEW CMS details panel -->
+    <aside id="detailsPanel" class="w-[380px] min-w-[380px] bg-white border-l border-gray-100 flex flex-col overflow-hidden">
+
+      <!-- Panel header + collapse -->
+      <div class="flex items-center justify-between px-4 h-12 border-b border-gray-100 shrink-0">
+        <span class="text-[12px] font-bold tracking-widest uppercase ff-body">Details</span>
+        <button id="collapseBtn" class="text-[11px] text-gray-400 hover:text-gray-600">Collapse →</button>
+      </div>
+
+      <!-- Sub-tabs -->
+      <div class="flex items-end px-3 border-b border-gray-100 shrink-0">
+        <button data-tab="publish"    class="tab-btn relative px-3 h-10 text-[12px] font-semibold ff-navy">Publish</button>
+        <button data-tab="meta"       class="tab-btn relative px-3 h-10 text-[12px] font-semibold text-gray-400 hover:text-gray-600">Meta</button>
+        <button data-tab="categories" class="tab-btn relative px-3 h-10 text-[12px] font-semibold text-gray-400 hover:text-gray-600">Categories</button>
+        <button data-tab="context"    class="tab-btn relative px-3 h-10 text-[12px] font-semibold text-gray-400 hover:text-gray-600">
+          Context
+          <span class="ml-1 text-[9px] font-semibold px-1.5 py-0.5 rounded bg-amber-100 text-amber-700">NEW</span>
+        </button>
+      </div>
+
+      <!-- Panel content -->
+      <div class="flex-1 overflow-y-auto">
+
+        <!-- ====================  PUBLISH TAB  ==================== -->
+        <section data-panel="publish" class="p-4 space-y-4">
+
+          <!-- Status card -->
+          <details open class="rounded-lg border border-gray-200 overflow-hidden">
+            <summary class="flex items-center justify-between px-4 h-10 ff-navy-bg text-white text-[12px] font-bold">
+              Status <span>▾</span>
+            </summary>
+            <div class="p-4 space-y-3 text-[13px]">
+              <div class="grid grid-cols-[90px_1fr] items-center gap-2">
+                <label class="font-semibold">Status</label>
+                <select class="rounded-md border border-gray-200 px-3 py-2">
+                  <option>Draft</option>
+                  <option>In Review</option>
+                  <option>Approved</option>
+                  <option selected>Published</option>
+                  <option>Trash</option>
+                </select>
+              </div>
+              <div class="grid grid-cols-[90px_1fr] items-center gap-2">
+                <label class="font-semibold">Created</label>
+                <input type="datetime-local" value="2026-04-17T11:04" class="rounded-md border border-gray-200 px-3 py-2" />
+              </div>
+              <div class="grid grid-cols-[90px_1fr] items-center gap-2">
+                <label class="font-semibold">Published</label>
+                <input type="datetime-local" value="2026-04-18T09:00" class="rounded-md border border-gray-200 px-3 py-2" />
+              </div>
+              <div class="grid grid-cols-[90px_1fr] items-center gap-2">
+                <label class="font-semibold">Author</label>
+                <select class="rounded-md border border-gray-200 px-3 py-2">
+                  <option>Bri Doty</option>
+                  <option>Kelley Long</option>
+                  <option>Cynthia Meyer</option>
+                </select>
+              </div>
+              <div class="flex items-center justify-between pt-2 border-t border-gray-100">
+                <button class="text-[12px] font-bold text-red-500 hover:text-red-600 tracking-wider uppercase">Move to Trash</button>
+                <button class="px-4 h-9 rounded-md text-[12px] font-bold text-white ff-navy-bg ff-navy-hover tracking-wider uppercase">Update</button>
+              </div>
+              <div class="mt-2 p-3 rounded-md bg-emerald-50 text-emerald-800 text-[11px] leading-snug">
+                <strong>Published</strong> — content and metadata are locked. Click "Unpublish" in the status dropdown to edit.
+              </div>
+            </div>
+          </details>
+
+          <!-- Version identity card -->
+          <details open class="rounded-lg border border-gray-200 overflow-hidden">
+            <summary class="flex items-center justify-between px-4 h-10 ff-navy-bg text-white text-[12px] font-bold">
+              Version <span>▾</span>
+            </summary>
+            <div class="p-4 space-y-3 text-[13px]">
+              <div class="grid grid-cols-[90px_1fr] items-center gap-2">
+                <label class="font-semibold">Slug</label>
+                <input type="text" value="can-and-should-you-get-life-insurance-on-a-child"
+                  class="rounded-md border border-gray-200 px-3 py-2 font-mono text-[12px]" />
+              </div>
+              <div class="grid grid-cols-[90px_1fr] items-center gap-2">
+                <label class="font-semibold">Client</label>
+                <input type="text" class="rounded-md border border-gray-200 px-3 py-2" />
+              </div>
+              <div class="grid grid-cols-[90px_1fr] items-center gap-2">
+                <label class="font-semibold">Region</label>
+                <select class="rounded-md border border-gray-200 px-3 py-2">
+                  <option selected>United States</option>
+                  <option>Canada</option>
+                  <option>United Kingdom</option>
+                </select>
+              </div>
+              <div class="grid grid-cols-[90px_1fr] items-center gap-2">
+                <label class="font-semibold">Language</label>
+                <select class="rounded-md border border-gray-200 px-3 py-2">
+                  <option selected>English</option>
+                  <option>Spanish</option>
+                  <option>French</option>
+                </select>
+              </div>
+            </div>
+          </details>
+
+          <!-- Versions placeholder -->
+          <details class="rounded-lg border border-gray-200 overflow-hidden">
+            <summary class="flex items-center justify-between px-4 h-10 bg-gray-100 text-gray-500 text-[12px] font-bold">
+              Versions <span class="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-gray-200">v2</span>
+            </summary>
+            <div class="p-4 text-[12px] text-gray-500">
+              Versioning ships in v2. The CMS shows "No other versions found" when empty — we'll mirror that UI here once revisions are wired up.
+            </div>
+          </details>
+
+        </section>
+
+        <!-- ====================  META TAB  ==================== -->
+        <section data-panel="meta" class="p-4 space-y-4 hidden">
+
+          <details open class="rounded-lg border border-gray-200 overflow-hidden">
+            <summary class="flex items-center justify-between px-4 h-10 ff-navy-bg text-white text-[12px] font-bold">
+              Meta <span>▾</span>
+            </summary>
+            <div class="p-4 space-y-4 text-[13px]">
+
+              <div class="space-y-1">
+                <label class="block text-[11px] font-bold uppercase tracking-wider">Excerpt</label>
+                <p class="text-[11px] text-gray-400 -mt-0.5">Content excerpt (displays in library index).</p>
+                <textarea rows="3" class="w-full rounded-md border border-gray-200 px-3 py-2 text-[13px] resize-none">Few financial topics generate more mixed feelings than life insurance on a child. It's not widely understood, and the sales pitch often moves faster than the math.</textarea>
+                <div class="flex justify-between text-[10px] text-gray-400">
+                  <span>Shows in library cards</span>
+                  <span>188 / 220</span>
+                </div>
+              </div>
+
+              <div class="space-y-1">
+                <label class="block text-[11px] font-bold uppercase tracking-wider">Content Type</label>
+                <p class="text-[11px] text-gray-400 -mt-0.5">Set on the left sidebar (drives generation). Shown here for reference.</p>
+                <div class="flex items-center gap-2">
+                  <span class="chip">Article</span>
+                  <a href="#" class="text-[11px] ff-navy font-semibold">Edit on sidebar →</a>
+                </div>
+              </div>
+
+              <div class="space-y-1">
+                <label class="block text-[11px] font-bold uppercase tracking-wider">Notes</label>
+                <p class="text-[11px] text-gray-400 -mt-0.5">Document notes (separate from prompt notes).</p>
+                <textarea rows="3" class="w-full rounded-md border border-gray-200 px-3 py-2 resize-none"></textarea>
+              </div>
+
+              <div class="space-y-1">
+                <label class="block text-[11px] font-bold uppercase tracking-wider">Reference Link</label>
+                <p class="text-[11px] text-gray-400 -mt-0.5">For content types other than Articles and Blogs.</p>
+                <input type="url" class="w-full rounded-md border border-gray-200 px-3 py-2" placeholder="https://…" />
+              </div>
+
+              <div class="grid grid-cols-2 gap-3">
+                <div class="space-y-1">
+                  <label class="block text-[11px] font-bold uppercase tracking-wider">Mime Type</label>
+                  <select class="w-full rounded-md border border-gray-200 px-3 py-2">
+                    <option selected>HTML</option>
+                    <option>Markdown</option>
+                    <option>Plain Text</option>
+                  </select>
+                </div>
+                <div class="space-y-1">
+                  <label class="block text-[11px] font-bold uppercase tracking-wider">Priority</label>
+                  <input type="number" min="0" max="100" value="0" class="w-full rounded-md border border-gray-200 px-3 py-2" />
+                  <p class="text-[10px] text-gray-400">0 lowest · 100 highest</p>
+                </div>
+              </div>
+
+              <div class="space-y-1">
+                <label class="block text-[11px] font-bold uppercase tracking-wider">Exclude Client</label>
+                <p class="text-[11px] text-gray-400 -mt-0.5">Clients prevented from viewing this article.</p>
+                <div class="flex flex-wrap gap-1.5 p-2 rounded-md border border-gray-200 bg-gray-50 min-h-[40px]">
+                  <span class="chip">Acme Corp <button>×</button></span>
+                  <span class="chip">Globex <button>×</button></span>
+                  <input type="text" placeholder="Add client…" class="flex-1 bg-transparent text-[13px] outline-none" />
+                </div>
+              </div>
+
+              <div class="grid grid-cols-2 gap-3">
+                <div class="space-y-1">
+                  <label class="block text-[11px] font-bold uppercase tracking-wider">Show in Library</label>
+                  <select class="w-full rounded-md border border-gray-200 px-3 py-2">
+                    <option selected>True</option>
+                    <option>False</option>
+                  </select>
+                </div>
+                <div class="space-y-1">
+                  <label class="block text-[11px] font-bold uppercase tracking-wider">Paid Content</label>
+                  <select class="w-full rounded-md border border-gray-200 px-3 py-2">
+                    <option>True</option>
+                    <option selected>False</option>
+                  </select>
+                </div>
+              </div>
+
+              <div class="space-y-1">
+                <label class="block text-[11px] font-bold uppercase tracking-wider">Redirect</label>
+                <p class="text-[11px] text-gray-400 -mt-0.5">If set, content will redirect to this internal article.</p>
+                <input type="text" class="w-full rounded-md border border-gray-200 px-3 py-2" />
+              </div>
+
+              <div class="space-y-1">
+                <label class="block text-[11px] font-bold uppercase tracking-wider">Source</label>
+                <p class="text-[11px] text-gray-400 -mt-0.5">Provider of this article.</p>
+                <select class="w-full rounded-md border border-gray-200 px-3 py-2">
+                  <option selected>Financial Finesse</option>
+                  <option>Partner</option>
+                  <option>Syndicated</option>
+                </select>
+              </div>
+
+              <div class="grid grid-cols-2 gap-3">
+                <div class="space-y-1">
+                  <label class="block text-[11px] font-bold uppercase tracking-wider">Legacy ID</label>
+                  <input type="number" class="w-full rounded-md border border-gray-200 px-3 py-2" placeholder="0" />
+                </div>
+                <div class="space-y-1">
+                  <label class="block text-[11px] font-bold uppercase tracking-wider">Excl. SmartBenefits</label>
+                  <select class="w-full rounded-md border border-gray-200 px-3 py-2">
+                    <option>True</option>
+                    <option selected>False</option>
+                  </select>
+                </div>
+              </div>
+
+            </div>
+          </details>
+        </section>
+
+        <!-- ====================  CATEGORIES TAB  ==================== -->
+        <section data-panel="categories" class="p-4 space-y-4 hidden">
+
+          <details open class="rounded-lg border border-gray-200 overflow-hidden">
+            <summary class="flex items-center justify-between px-4 h-10 ff-navy-bg text-white text-[12px] font-bold">
+              Categories <span>▾</span>
+            </summary>
+            <div class="p-4 text-[13px]">
+              <div class="flex items-center justify-between mb-2">
+                <input type="text" placeholder="Filter categories…" class="flex-1 rounded-md border border-gray-200 px-3 py-1.5 text-[12px]" />
+                <button class="ml-2 text-[11px] ff-navy font-semibold">Expand all</button>
+              </div>
+              <div class="rounded-md border border-gray-200 p-3 max-h-72 overflow-y-auto space-y-1.5">
+                <details open>
+                  <summary class="flex items-center gap-2 font-semibold"><input type="checkbox" /> Benefits Planning <span class="text-[10px] text-gray-400 ml-auto">4</span></summary>
+                  <div class="pl-6 mt-1 space-y-1">
+                    <label class="flex items-center gap-2"><input type="checkbox" /> Financial Benefits</label>
+                    <label class="flex items-center gap-2"><input type="checkbox" /> Health And Wellness Benefits</label>
+                    <label class="flex items-center gap-2"><input type="checkbox" /> Lifestyle Benefits</label>
+                    <label class="flex items-center gap-2"><input type="checkbox" /> Other Benefits</label>
+                  </div>
+                </details>
+                <details open>
+                  <summary class="flex items-center gap-2 font-semibold"><input type="checkbox" checked /> Debt <span class="text-[10px] text-gray-400 ml-auto">4</span></summary>
+                  <div class="pl-6 mt-1 space-y-1">
+                    <label class="flex items-center gap-2"><input type="checkbox" /> Borrowing Money</label>
+                    <label class="flex items-center gap-2"><input type="checkbox" checked /> Choosing A Credit Card</label>
+                    <label class="flex items-center gap-2"><input type="checkbox" /> Coping With Student Loans</label>
+                    <label class="flex items-center gap-2"><input type="checkbox" /> Dealing With Bankruptcy</label>
+                  </div>
+                </details>
+                <details>
+                  <summary class="flex items-center gap-2 font-semibold"><input type="checkbox" /> Insurance <span class="text-[10px] text-gray-400 ml-auto">—</span></summary>
+                  <div class="pl-6 mt-1 text-[11px] text-gray-400 italic">Subcategories from your CMS will load here</div>
+                </details>
+                <details>
+                  <summary class="flex items-center gap-2 font-semibold"><input type="checkbox" /> Retirement <span class="text-[10px] text-gray-400 ml-auto">—</span></summary>
+                  <div class="pl-6 mt-1 text-[11px] text-gray-400 italic">Subcategories from your CMS will load here</div>
+                </details>
+              </div>
+              <div class="mt-2 flex items-center gap-1.5 flex-wrap">
+                <span class="text-[10px] text-gray-400">Selected:</span>
+                <span class="chip">Debt › Choosing A Credit Card <button>×</button></span>
+              </div>
+            </div>
+          </details>
+
+          <details open class="rounded-lg border border-gray-200 overflow-hidden">
+            <summary class="flex items-center justify-between px-4 h-10 ff-navy-bg text-white text-[12px] font-bold">
+              Curated Categories <span>▾</span>
+            </summary>
+            <div class="p-4 text-[13px]">
+              <div class="rounded-md border border-gray-200 p-3 max-h-56 overflow-y-auto space-y-1.5">
+                <label class="flex items-center gap-2"><input type="checkbox" /> How our coaches manage their finances</label>
+                <label class="flex items-center gap-2"><input type="checkbox" checked /> Make the most of your benefits</label>
+                <label class="flex items-center gap-2"><input type="checkbox" /> Get rid of financial stress</label>
+                <label class="flex items-center gap-2"><input type="checkbox" /> Navigating financial uncertainty</label>
+                <label class="flex items-center gap-2"><input type="checkbox" /> The best money tips you've never heard of</label>
+                <label class="flex items-center gap-2"><input type="checkbox" /> Don't make these four mistakes</label>
+                <label class="flex items-center gap-2"><input type="checkbox" /> Retirement ready in 5 moves</label>
+              </div>
+              <div class="mt-2 flex items-center gap-1.5 flex-wrap">
+                <span class="text-[10px] text-gray-400">Selected:</span>
+                <span class="chip">Make the most of your benefits <button>×</button></span>
+              </div>
+              <p class="mt-2 text-[11px] text-gray-400">Curated lists are editorial groupings — the same piece can live in multiple curated categories.</p>
+            </div>
+          </details>
+
+        </section>
+
+        <!-- ====================  CONTEXT TAB  ==================== -->
+        <section data-panel="context" class="p-4 space-y-4 hidden">
+
+          <details open class="rounded-lg border border-gray-200 overflow-hidden">
+            <summary class="flex items-center justify-between px-4 h-10 ff-navy-bg text-white text-[12px] font-bold">
+              Long-form SEO article <span>▾</span>
+            </summary>
+            <div class="p-4 space-y-3 text-[13px]">
+              <p class="text-[12px] text-gray-500 leading-snug">
+                This is the separate, long-form article used for SEO. It's saved independently of the short library version —
+                updating one doesn't touch the other.
+              </p>
+
+              <div class="flex items-center gap-2">
+                <button class="h-9 px-3 rounded-md text-[12px] font-bold text-white ff-navy-bg ff-navy-hover">
+                  ✨ Generate from current draft
+                </button>
+                <button class="h-9 px-3 rounded-md text-[12px] font-semibold text-gray-600 border border-gray-200">Refine…</button>
+                <span class="ml-auto text-[11px] text-gray-400">~1,800 words target</span>
+              </div>
+
+              <textarea rows="18" class="w-full rounded-md border border-gray-200 px-3 py-2 text-[13px] leading-relaxed font-serif resize-none" placeholder="Paste or generate the full long-form SEO article here…">Life insurance on a child is one of the most misunderstood products in personal finance. Ask ten financial planners and you'll get a surprisingly consistent answer — "probably not" — but the nuance behind that answer deserves a longer look, because the sales pitch almost never includes it.
+
+## Why children rarely need life insurance
+
+The purpose of life insurance is to replace income. A child has no income to replace, so the classic justification doesn't apply. For families without significant assets, the priority sequence is almost always:
+
+1. Adequate term life on the earning parents (10–12x income)
+2. Fully funded emergency savings (3–6 months)
+3. Retirement contributions that capture any employer match
+
+Only after these are in place does a conversation about supplemental coverage on a child become reasonable.
+
+## The case that does exist: future insurability
+
+The strongest argument for a small policy on a child is future insurability. If a child later develops a chronic condition — Type 1 diabetes, a heart condition diagnosed in young adulthood, certain cancers — they may be unable to purchase life insurance as an adult, or may only qualify at very high rates. A small whole-life or guaranteed-purchase-option policy bought in childhood locks in insurability for life.
+
+## The math most parents don't see…</textarea>
+
+              <div class="flex items-center justify-between text-[11px] text-gray-400">
+                <span>Auto-saved · 1,842 words</span>
+                <span>Last generated from draft: never</span>
+              </div>
+
+              <details class="mt-3 rounded-md bg-slate-50 border border-slate-200">
+                <summary class="flex items-center justify-between px-3 py-2 text-[12px] font-semibold">
+                  SEO quick check <span>▾</span>
+                </summary>
+                <div class="p-3 text-[12px] space-y-1.5">
+                  <div class="flex justify-between"><span>Word count</span><span class="font-mono">1,842</span></div>
+                  <div class="flex justify-between"><span>H2 headings</span><span class="font-mono">4</span></div>
+                  <div class="flex justify-between"><span>Reading level</span><span class="font-mono">9th grade</span></div>
+                  <div class="flex justify-between"><span>Target keyword density</span><span class="font-mono">1.3%</span></div>
+                </div>
+              </details>
+            </div>
+          </details>
+
+        </section>
+
+      </div>
+
+      <!-- Sticky save bar -->
+      <div class="border-t border-gray-100 px-4 py-3 flex items-center justify-between shrink-0 bg-slate-50">
+        <span class="text-[11px] text-gray-400">Cmd+S saves everything</span>
+        <button class="h-9 px-4 rounded-md text-[12px] font-bold text-white ff-navy-bg ff-navy-hover">Save details</button>
+      </div>
+
+    </aside>
+  </div>
+</div>
+
+<script>
+  // Tab switching
+  const tabs   = document.querySelectorAll('.tab-btn');
+  const panels = document.querySelectorAll('[data-panel]');
+  tabs.forEach(t => t.addEventListener('click', () => {
+    const id = t.dataset.tab;
+    tabs.forEach(b => {
+      const active = b.dataset.tab === id;
+      b.classList.toggle('ff-navy', active);
+      b.classList.toggle('text-gray-400', !active);
+      b.classList.toggle('hover:text-gray-600', !active);
+      // underline
+      b.querySelectorAll('.tab-underline').forEach(u => u.remove());
+      if (active) {
+        const u = document.createElement('span');
+        u.className = 'tab-underline absolute inset-x-3 -bottom-px h-[2px] ff-navy-bg rounded-full';
+        b.appendChild(u);
+      }
+    });
+    panels.forEach(p => p.classList.toggle('hidden', p.dataset.panel !== id));
+  }));
+  // seed the initial underline on Publish
+  const first = document.querySelector('.tab-btn[data-tab="publish"]');
+  const u0 = document.createElement('span');
+  u0.className = 'tab-underline absolute inset-x-3 -bottom-px h-[2px] ff-navy-bg rounded-full';
+  first.appendChild(u0);
+
+  // Collapse right panel
+  const panel = document.getElementById('detailsPanel');
+  document.getElementById('collapseBtn').addEventListener('click', () => {
+    const collapsed = panel.classList.toggle('w-[40px]');
+    panel.classList.toggle('min-w-[40px]');
+    panel.classList.toggle('w-[380px]', !collapsed);
+    panel.classList.toggle('min-w-[380px]', !collapsed);
+    panel.querySelectorAll('.flex-1, [data-panel], [data-tab]').forEach(el => el.classList.toggle('hidden', collapsed));
+  });
+</script>
+
+</body>
+</html>

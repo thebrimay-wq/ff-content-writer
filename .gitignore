@@ -1,0 +1,25 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Local env / secrets — NEVER commit
+.env
+.env.*
+*.rtf
+
+# Editor / OS
+.DS_Store
+.vscode/
+.idea/
+
+# Local agent / IDE state
+.claude/
+.claude-flow/
+.swarm/
+.mcp.json
+
+# Logs
+*.log
+npm-debug.log*
