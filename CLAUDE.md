@@ -31,7 +31,7 @@
 - **Markdown rendering**: `marked`
 
 ## File map
-- `src/main.ts` (~3,100 lines) — the entire app: one Lit component with sidebar inputs, unified inline editor, right rail, library, and per-content-type renderers
+- `src/main.ts` (~3,750 lines) — the entire app: one Lit component (`<ff-app>`) with sidebar inputs, unified inline editor, right rail, library, per-content-type renderers, drawer state, modal focus management, beforeunload guard
 - `src/lib/store.ts` — localStorage CRUD for `ContentEntry`, title/slug derivation, hidden-id management
 - `src/lib/contentTypeSchemas.ts` — TypeScript types + zod-style runtime schemas for all 9 content types
 - `src/lib/api.ts` — Anthropic API streaming wrapper
@@ -41,23 +41,39 @@
 - `src/lib/versionConfig.ts`, `taxonomy.ts` — config
 
 ## Architecture notes (important — easy to misread the code)
+- The custom element tag is `<ff-app>` (not `<ff-content-writer>`). The component opts out of shadow DOM via `createRenderRoot() { return this }`, so light-DOM queries work.
 - The center pane is a **single unified surface that is both Preview AND Editor**. There are no separate Preview / Edit tabs. Click any field → edit it inline.
 - The toolbar's `</>` button toggles a read-only HTML/Markdown/JSON source view (admin-only intent).
-- The right rail holds: Status pill → Save → Publish → Export HTML/JSON → Insert blocks → Quick refine.
+- The right rail holds: Status pill → Save → Publish → Slug → Excerpt → Categories → Long-form source → Sources → Advanced.
 - 9 content types: `article`, `money_tip`, `checklist`, `quiz`, `expert_insight`, `user_story`, `video`, `calculator`, `infographic`. `article` uses markdown; the other 8 are JSON-backed.
-- Switching content type mid-draft prompts before destroying incompatible output, and preserves title across JSON ↔ JSON switches.
+- Switching content type mid-draft prompts before destroying incompatible output. **JSON ↔ JSON** switches preserve the title. **Article ↔ JSON** is destructive: it also resets `editingId`, `_currentStatus`, `_slug`, `_excerpt`, `_categories`, etc. via `_resetMeta()` so a Save/Publish doesn't push empty content under the previous entry's slug.
+
+## Layout & responsive behavior
+- Desktop (≥1024px / Tailwind `lg`): three-column flex — left sidebar (`w-[300px]`), center `<main>`, right rail (`w-[300px]`).
+- Below `lg`: both rails collapse to **off-canvas drawers**. The header shows a hamburger (left) + panel-icon (right) toggle. State lives in `_sidebarDrawerOpen` / `_railDrawerOpen`. A `<lg:hidden>` backdrop dims the editor when either drawer is open. `_onResize` auto-closes drawers when the viewport widens back to desktop. `_switchTab` also closes them.
+- Inner article padding: `px-4 sm:px-8 lg:px-12 py-6 lg:py-10` on the prose container so the body stays readable on narrow viewports.
+
+## Data-loss safeguards
+- `_hasUnsavedWork()` returns `isDirty && !!output.trim()` — the canonical "would we lose work?" check.
+- `_newContent(force = false)` prompts via `confirm()` when there's unsaved work. Pass `force = true` from contexts where the user already committed to the destructive action (e.g. after deleting the entry currently being edited).
+- `_onBeforeUnload` registered in `connectedCallback` triggers the browser's "leave site?" prompt when the local draft is dirty.
+
+## Modals (API key prompt, internal link picker)
+- Both render with `role="dialog"`, `aria-modal="true"`, and `aria-labelledby` pointing at their title.
+- Each modal's first input is marked with a `data-modal-autofocus="key" | "link"` attribute. The `updated()` lifecycle detects the rising edge of `showKeyPrompt` / `_linkModalOpen`, focuses the matching input on open, and restores focus to the previously focused element (`_modalReturnFocus`) on close. **Don't use the bare `autofocus` HTML attribute** — Lit's re-render races kill it.
+- Escape on the modal closes via the dedicated handlers `_closeKeyPrompt()` / `_closeLinkModal()`.
 
 ## Conventions
 - Inline-editable fields use `contenteditable` + `@blur` to commit; placeholders are CSS `data-placeholder`, never literal italic text in the DOM (that gets saved as content).
-- AI rewrite toolbar fires on `[data-rewrite="true"]` containers with ≥4 chars selected.
-- Slash menu (`/`) inserts markdown-style HTML — currently global; ideally article-only.
+- AI rewrite toolbar fires on `[data-rewrite="true"]` containers with ≥4 chars selected. Both the article body **and the title** carry this attribute.
+- Slash menu (`/`) is **article-only** — guarded by `this.contentType === 'article'` in `_onEditorKeydown`. Escape removes the typed `/` via `_closeSlash({ removeTrigger: true }) → _removeSlashTrigger()`.
+- Selection toolbar position: prefer **above** the selection (Notion/Docs pattern), fall back to below, then right/left, then pinned to viewport top.
+- Generate/refine errors surface in a dismissible `role="alert"` banner inside `<main>` (driven by `this.error`). `AbortError` is silenced.
 - Status values: `draft | in_review | approved | published | trash`. The right-rail pill reflects `_currentStatus`.
 
 ## Known deferred work
 - `related_resources` editor for User Story / Video / Calculator / Infographic
 - Checklist `subItems` editor and per-section `image` upload
 - Quiz `correctAnswerIds` editor (knowledge-type scoring) and per-answer `pointValue` / `isCorrect` toggles
-- Article title missing `data-rewrite="true"` so AI rewrite can't fire on it
-- Slash menu should be scoped to article body only
-- Escape-dismissing the slash menu can leave a stray `/` in the body
 - Drag-and-drop image upload (UI hint exists but only file picker works)
+- Audience dropdown copy ("We'll tune tone and depth") doesn't match the FF-specific value set (Crisis / Struggling / Planning / Optimizing)
