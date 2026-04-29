@@ -184,11 +184,45 @@ class FFApp extends LitElement {
   @state() private showKeyPrompt = false
   @state() private keyDraft = ''
 
+  // Responsive drawer state (only used below the `lg` breakpoint).
+  @state() private _sidebarDrawerOpen = false
+  @state() private _railDrawerOpen = false
+
+  // Modal focus management — element to restore focus to on close.
+  private _modalReturnFocus: HTMLElement | null = null
+
   private _abort: AbortController | null = null
 
   override connectedCallback() {
     super.connectedCallback()
     this._refreshEntries()
+    window.addEventListener('beforeunload', this._onBeforeUnload)
+    window.addEventListener('resize', this._onResize)
+  }
+
+  override disconnectedCallback() {
+    super.disconnectedCallback()
+    window.removeEventListener('beforeunload', this._onBeforeUnload)
+    window.removeEventListener('resize', this._onResize)
+  }
+
+  /** Warn when leaving with unsaved work in the local draft buffer. The
+   *  message text is browser-controlled in modern browsers — only the
+   *  presence of `returnValue` matters. */
+  private _onBeforeUnload = (e: BeforeUnloadEvent) => {
+    if (this._hasUnsavedWork()) {
+      e.preventDefault()
+      e.returnValue = ''
+    }
+  }
+
+  /** Auto-close the mobile drawers once the viewport widens to the
+   *  desktop layout so they don't get stuck open in an unreachable state. */
+  private _onResize = () => {
+    if (window.innerWidth >= 1024) {
+      if (this._sidebarDrawerOpen) this._sidebarDrawerOpen = false
+      if (this._railDrawerOpen) this._railDrawerOpen = false
+    }
   }
 
   private _refreshEntries() {
@@ -203,6 +237,8 @@ class FFApp extends LitElement {
   private _switchTab(t: 'new' | 'library') {
     if (this.tab === t) return
     this.tab = t
+    this._sidebarDrawerOpen = false
+    this._railDrawerOpen = false
     if (t === 'library') this._refreshEntries()
   }
 
@@ -241,7 +277,7 @@ class FFApp extends LitElement {
   private _deleteEntry = (e: CustomEvent<string>) => {
     const id = e.detail
     if (id.startsWith('cms_')) hideEntry(id); else deleteEntry(id)
-    if (this.editingId === id) this._newContent()
+    if (this.editingId === id) this._newContent(true) // entry already gone — no point asking
     this._refreshEntries()
   }
 
@@ -265,7 +301,16 @@ class FFApp extends LitElement {
     this._refreshEntries()
   }
 
-  private _newContent() {
+  /** Reset to a brand-new draft. When `force` is false and the current draft
+   *  has unsaved changes, prompt the user first so a stray click on
+   *  "+ New content" doesn't silently discard their work. */
+  private _newContent(force = false) {
+    if (!force && this._hasUnsavedWork()) {
+      const ok = window.confirm(
+        'You have unsaved changes. Discard them and start a new draft?',
+      )
+      if (!ok) return
+    }
     this._abort?.abort()
     this.tab = 'new'
     this.mode = 'gate'
@@ -282,6 +327,11 @@ class FFApp extends LitElement {
     this._resetMeta()
     this._undoStack = []
     this._redoStack = []
+  }
+
+  /** True when the current draft would be lost if we reset right now. */
+  private _hasUnsavedWork(): boolean {
+    return this.isDirty && !!this.output.trim()
   }
 
   private _enterEditor(creationMode: 'ai' | 'manual') {
@@ -372,6 +422,7 @@ class FFApp extends LitElement {
     this._abort = controller
     const previous = this.output
     this.output = ''
+    this.error = ''
     this.isGenerating = true
     try {
       await streamMessage(this.apiKey, [{ role: 'user', content: msg }], systemPrompt,
@@ -888,12 +939,17 @@ class FFApp extends LitElement {
       // Different shape (article ↔ JSON) means we can't preserve it; warn first.
       if (wasArticle !== goingArticle) {
         proceed = window.confirm(
-          `Switching to "${V2_TYPE_LABELS[next] ?? next}" will replace the current draft with an empty ${V2_TYPE_LABELS[next] ?? next}. Continue?`,
+          `Switching to "${V2_TYPE_LABELS[next] ?? next}" will replace the current draft with an empty ${V2_TYPE_LABELS[next] ?? next}. Identifying metadata (slug, excerpt, categories, publish status) will also be reset to draft so you don't overwrite the original entry. Continue?`,
         )
         if (!proceed) return
         this._pushUndo()
         this.output = goingArticle ? '' : JSON.stringify(emptyContentForType(next), null, 2)
         this.isDirty = true
+        // Destructive shape change: cut ties with the previous entry so a
+        // Save/Publish doesn't push an empty doc under the old slug.
+        this.editingId = null
+        this._currentStatus = 'draft'
+        this._resetMeta()
       } else if (!goingArticle) {
         // JSON → JSON: replace shell, keep title if present.
         this._pushUndo()
@@ -916,17 +972,28 @@ class FFApp extends LitElement {
       <div class="h-screen flex flex-col overflow-hidden">
 
         <!-- Top bar -->
-        <header class="flex items-center justify-between px-4 h-12 shrink-0 bg-white border-b border-gray-100">
-          <div class="flex items-center">
+        <header class="flex items-center justify-between px-2 sm:px-4 h-12 shrink-0 bg-white border-b border-gray-100">
+          <div class="flex items-center min-w-0">
+            ${this.tab === 'new' && this.mode === 'editor' ? html`
+              <!-- Sidebar drawer toggle (visible only below lg) -->
+              <button
+                @click=${() => { this._sidebarDrawerOpen = !this._sidebarDrawerOpen }}
+                class="lg:hidden h-12 px-3 text-gray-500 hover:text-[#063853] flex items-center"
+                aria-label="Open inputs panel"
+                aria-expanded=${this._sidebarDrawerOpen ? 'true' : 'false'}
+                title="Inputs">
+                <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><path d="M3 5h12M3 9h12M3 13h12" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+              </button>
+            ` : ''}
             <button
               @click=${() => this._switchTab('new')}
-              class="relative h-12 px-4 text-[13px] font-semibold flex items-center transition-colors ${this.tab === 'new' ? 'text-[#063853]' : 'text-gray-400 hover:text-gray-600'}">
+              class="relative h-12 px-3 sm:px-4 text-[13px] font-semibold flex items-center whitespace-nowrap transition-colors ${this.tab === 'new' ? 'text-[#063853]' : 'text-gray-400 hover:text-gray-600'}">
               New content
               ${this.tab === 'new' ? html`<span class="absolute inset-x-2 bottom-0 h-[2px] bg-[#063853] rounded-full"></span>` : ''}
             </button>
             <button
               @click=${() => this._switchTab('library')}
-              class="relative h-12 px-4 text-[13px] font-semibold flex items-center gap-2 transition-colors ${this.tab === 'library' ? 'text-[#063853]' : 'text-gray-400 hover:text-gray-600'}">
+              class="relative h-12 px-3 sm:px-4 text-[13px] font-semibold flex items-center gap-2 whitespace-nowrap transition-colors ${this.tab === 'library' ? 'text-[#063853]' : 'text-gray-400 hover:text-gray-600'}">
               Library
               <span class="text-[10px] font-semibold px-1.5 py-0.5 rounded ${this.tab === 'library' ? 'bg-[#063853]/10 text-[#063853]' : 'bg-gray-100 text-gray-400'}">
                 ${this.libraryEntries.filter(e => e.status !== 'trash').length}
@@ -934,19 +1001,32 @@ class FFApp extends LitElement {
               ${this.tab === 'library' ? html`<span class="absolute inset-x-2 bottom-0 h-[2px] bg-[#063853] rounded-full"></span>` : ''}
             </button>
           </div>
-          <div class="flex items-center gap-3">
+          <div class="flex items-center gap-2 sm:gap-3">
             <button
               @click=${() => { this.keyDraft = this.apiKey; this.showKeyPrompt = true }}
-              class="text-[11px] font-semibold px-2.5 py-1 rounded-md transition-colors ${this.apiKey ? 'text-emerald-600 bg-emerald-50 hover:bg-emerald-100' : 'text-gray-400 bg-gray-100 hover:bg-gray-200'}"
+              class="text-[11px] font-semibold px-2.5 py-1 rounded-md transition-colors whitespace-nowrap ${this.apiKey ? 'text-emerald-600 bg-emerald-50 hover:bg-emerald-100' : 'text-gray-400 bg-gray-100 hover:bg-gray-200'}"
               title="Update Anthropic API key"
             >${this.apiKey ? 'Key set' : 'API key'}</button>
             <button
               @click=${() => this._newContent()}
-              class="inline-flex items-center gap-1.5 text-[12px] font-semibold px-3 py-1.5 rounded-lg bg-[#063853] hover:bg-[#04293D] text-white"
+              class="inline-flex items-center gap-1.5 text-[12px] font-semibold px-3 py-1.5 rounded-lg bg-[#063853] hover:bg-[#04293D] text-white whitespace-nowrap"
+              aria-label="Start a new draft"
             >
               <svg width="11" height="11" viewBox="0 0 11 11" fill="none"><path d="M5.5 1v9M1 5.5h9" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
-              New content
+              <span class="hidden sm:inline">New content</span>
+              <span class="sm:hidden">New</span>
             </button>
+            ${this.tab === 'new' && this.mode === 'editor' ? html`
+              <!-- Right-rail drawer toggle (visible only below lg) -->
+              <button
+                @click=${() => { this._railDrawerOpen = !this._railDrawerOpen }}
+                class="lg:hidden h-9 w-9 flex items-center justify-center rounded-md text-gray-500 hover:text-[#063853] hover:bg-gray-100"
+                aria-label="Open metadata panel"
+                aria-expanded=${this._railDrawerOpen ? 'true' : 'false'}
+                title="Save & metadata">
+                <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><rect x="3" y="3" width="12" height="12" rx="2" stroke="currentColor" stroke-width="1.4"/><path d="M11 3v12" stroke="currentColor" stroke-width="1.4"/></svg>
+              </button>
+            ` : ''}
           </div>
         </header>
 
@@ -984,7 +1064,7 @@ class FFApp extends LitElement {
   // ── Intent gate ────────────────────────────────────────────────────────────
   private _renderGate() {
     return html`
-      <div class="flex-1 flex items-center justify-center bg-gradient-to-b from-gray-50/40 to-white px-6 py-10 overflow-y-auto">
+      <div class="flex-1 flex items-start lg:items-center justify-center bg-gradient-to-b from-gray-50/40 to-white px-4 sm:px-6 py-6 sm:py-10 overflow-y-auto">
         <div class="w-full max-w-[760px]">
           <div class="text-center mb-8">
             <h2 class="text-[28px] font-semibold text-[#1a1a1a] mb-2 leading-tight">How do you want to start?</h2>
@@ -1054,18 +1134,34 @@ class FFApp extends LitElement {
 
   // ── Editor (3-pane) ────────────────────────────────────────────────────────
   private _renderEditor() {
+    const sidebarOpen = this._sidebarDrawerOpen
+    const railOpen = this._railDrawerOpen
+    const anyDrawerOpen = sidebarOpen || railOpen
     return html`
-      <div class="flex flex-1 overflow-hidden">
+      <div class="relative flex flex-1 overflow-hidden">
+
+        <!-- Backdrop for mobile/tablet drawers (only below lg) -->
+        ${anyDrawerOpen ? html`
+          <div class="lg:hidden fixed inset-0 top-12 z-30 bg-black/30"
+            @click=${() => { this._sidebarDrawerOpen = false; this._railDrawerOpen = false }}
+            aria-hidden="true"></div>
+        ` : ''}
 
         <!-- LEFT SIDEBAR -->
-        <aside class="w-[320px] min-w-[320px] flex flex-col bg-white border-r border-gray-100 overflow-y-auto overflow-x-hidden scrollbar-thin">
+        <aside
+          class="bg-white border-r border-gray-100 overflow-y-auto overflow-x-hidden scrollbar-thin flex flex-col
+            lg:w-[300px] lg:min-w-[300px] lg:relative lg:translate-x-0 lg:shadow-none
+            fixed inset-y-12 left-0 z-40 w-[320px] max-w-[85vw] shadow-2xl transition-transform duration-200
+            ${sidebarOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}"
+          aria-hidden=${sidebarOpen ? 'false' : 'true'}>
           <div class="flex flex-col p-7 gap-6 min-h-full">
 
-            <!-- Region pill (compact) -->
-            <button class="self-start flex items-center gap-2 px-3 py-1.5 rounded-full bg-gray-50 border border-gray-200 hover:bg-gray-100">
+            <!-- Region pill (display-only — chosen at the gate) -->
+            <div class="self-start inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-gray-50 border border-gray-200 cursor-default select-none"
+              title="Region & language are set when you start a new draft.">
               <span class="text-[14px] leading-none">${regionFlag(this.region)}</span>
               <span class="text-[12px] font-semibold tracking-wide text-gray-700">${regionShort(this.region)} · ${langShort(this.language)}</span>
-            </button>
+            </div>
 
             <!-- Mode flip: Blank ↔ With AI -->
             <div role="tablist" class="inline-flex items-center gap-0.5 p-0.5 rounded-full bg-gray-100 self-start">
@@ -1119,12 +1215,14 @@ class FFApp extends LitElement {
               <!-- Topic -->
               <div class="flex flex-col gap-1.5">
                 <label class="text-[10px] font-bold tracking-widest uppercase text-[#383838]">Topic</label>
-                <input type="text" .value=${this.topic}
-                  @input=${(e: Event) => { this.topic = (e.target as HTMLInputElement).value }}
-                  @keydown=${(e: KeyboardEvent) => { if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') this._generate() }}
+                <textarea .value=${this.topic}
+                  @input=${(e: Event) => { this.topic = (e.target as HTMLTextAreaElement).value }}
+                  @keydown=${(e: KeyboardEvent) => { if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); this._generate() } }}
                   ?disabled=${this.isGenerating}
+                  rows="2"
                   placeholder="What do you want to create?"
-                  class="w-full rounded-lg border-2 border-gray-200 bg-white px-3.5 py-3 text-[15px] outline-none focus:border-[#063853] focus:ff-focus-ring disabled:opacity-50" />
+                  class="w-full rounded-lg border-2 border-gray-200 bg-white px-3.5 py-2.5 text-[15px] leading-snug outline-none focus:border-[#063853] focus:ff-focus-ring disabled:opacity-50 resize-none break-words"
+                  title=${this.topic}></textarea>
               </div>
 
               <!-- Notes -->
@@ -1188,11 +1286,24 @@ class FFApp extends LitElement {
         <!-- CENTER: output -->
         <main class="flex-1 flex flex-col overflow-hidden min-w-0 bg-white">
           ${this.output ? this._renderCenterToolbar() : ''}
+          ${this.error ? html`
+            <div class="shrink-0 mx-4 sm:mx-6 mt-3 px-3 py-2 rounded-lg bg-red-50 border border-red-200 text-[12px] text-red-700 flex items-start gap-2"
+              role="alert" aria-live="polite">
+              <svg class="shrink-0 mt-0.5" width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 1.5l6 11h-12l6-11z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M7 6v3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><circle cx="7" cy="11" r="0.6" fill="currentColor"/></svg>
+              <span class="flex-1 leading-snug">${this.error}</span>
+              <button @click=${() => { this.error = '' }} class="text-red-400 hover:text-red-600 px-1" aria-label="Dismiss error">×</button>
+            </div>
+          ` : ''}
           ${this._renderCenter()}
         </main>
 
         <!-- RIGHT RAIL -->
-        <aside class="w-[260px] min-w-[260px] bg-gray-50/40 border-l border-gray-100 flex flex-col overflow-y-auto scrollbar-thin">
+        <aside
+          class="bg-gray-50/40 border-l border-gray-100 flex flex-col overflow-y-auto scrollbar-thin
+            lg:w-[300px] lg:min-w-[300px] lg:relative lg:translate-x-0 lg:shadow-none
+            fixed inset-y-12 right-0 z-40 w-[320px] max-w-[85vw] shadow-2xl transition-transform duration-200
+            ${railOpen ? 'translate-x-0' : 'translate-x-full lg:translate-x-0'}"
+          aria-hidden=${railOpen ? 'false' : 'true'}>
           <div class="p-5 flex flex-col gap-4">
 
             <!-- Status -->
@@ -1421,7 +1532,7 @@ class FFApp extends LitElement {
       const bodyHtml = body ? (marked.parse(body) as string) : ''
       return html`
         <div class="flex-1 overflow-y-auto scrollbar-thin">
-          <div class="mx-auto max-w-[720px] px-12 py-10">
+          <div class="mx-auto max-w-[720px] px-4 sm:px-8 lg:px-12 py-6 lg:py-10">
             ${this._renderTitleHeader({
               title,
               placeholder: 'Untitled article',
@@ -1535,7 +1646,7 @@ class FFApp extends LitElement {
   private _renderVideo(v: any | null) {
     return html`
       <div class="flex-1 overflow-y-auto scrollbar-thin">
-        <div class="mx-auto max-w-[720px] px-12 py-10 ${this.isGenerating ? 'ff-stream-cursor' : ''}" data-rewrite="true">
+        <div class="mx-auto max-w-[720px] px-4 sm:px-8 lg:px-12 py-6 lg:py-10 ${this.isGenerating ? 'ff-stream-cursor' : ''}" data-rewrite="true">
           <p class="text-[10px] font-bold tracking-widest uppercase text-gray-400 mb-2">Video</p>
           ${this._renderTitleHeader({
             title: v?.title ?? '',
@@ -1581,7 +1692,7 @@ class FFApp extends LitElement {
   private _renderCalculator(c: any | null) {
     return html`
       <div class="flex-1 overflow-y-auto scrollbar-thin">
-        <div class="mx-auto max-w-[720px] px-12 py-10 ${this.isGenerating ? 'ff-stream-cursor' : ''}" data-rewrite="true">
+        <div class="mx-auto max-w-[720px] px-4 sm:px-8 lg:px-12 py-6 lg:py-10 ${this.isGenerating ? 'ff-stream-cursor' : ''}" data-rewrite="true">
           <p class="text-[10px] font-bold tracking-widest uppercase text-gray-400 mb-2">Calculator</p>
           ${this._renderTitleHeader({
             title: c?.title ?? '',
@@ -1629,7 +1740,7 @@ class FFApp extends LitElement {
     const title = (g?._extras?.title as string | undefined) ?? ''
     return html`
       <div class="flex-1 overflow-y-auto scrollbar-thin">
-        <div class="mx-auto max-w-[720px] px-12 py-10 ${this.isGenerating ? 'ff-stream-cursor' : ''}" data-rewrite="true">
+        <div class="mx-auto max-w-[720px] px-4 sm:px-8 lg:px-12 py-6 lg:py-10 ${this.isGenerating ? 'ff-stream-cursor' : ''}" data-rewrite="true">
           <p class="text-[10px] font-bold tracking-widest uppercase text-gray-400 mb-2">Infographic</p>
           ${this._renderTitleHeader({
             title,
@@ -1757,7 +1868,7 @@ class FFApp extends LitElement {
   private _renderChecklist(cl: Checklist | null) {
     return html`
       <div class="flex-1 overflow-y-auto scrollbar-thin">
-        <div class="mx-auto max-w-[720px] px-12 py-10 ${this.isGenerating ? 'ff-stream-cursor' : ''}">
+        <div class="mx-auto max-w-[720px] px-4 sm:px-8 lg:px-12 py-6 lg:py-10 ${this.isGenerating ? 'ff-stream-cursor' : ''}">
           ${this._renderTitleHeader({
             title: cl?.title ?? '',
             placeholder: 'Untitled checklist',
@@ -1881,7 +1992,7 @@ class FFApp extends LitElement {
   private _renderExpertInsight(ei: ExpertInsight | null) {
     return html`
       <div class="flex-1 overflow-y-auto scrollbar-thin">
-        <div class="mx-auto max-w-[720px] px-12 py-10 ${this.isGenerating ? 'ff-stream-cursor' : ''}" data-rewrite="true">
+        <div class="mx-auto max-w-[720px] px-4 sm:px-8 lg:px-12 py-6 lg:py-10 ${this.isGenerating ? 'ff-stream-cursor' : ''}" data-rewrite="true">
 
           ${this._renderTitleHeader({
             title: ei?.title ?? '',
@@ -1955,7 +2066,7 @@ class FFApp extends LitElement {
     const u = us as { title?: string; subtitle?: string; copy?: string; thumbnail_image?: string } | null
     return html`
       <div class="flex-1 overflow-y-auto scrollbar-thin">
-        <div class="mx-auto max-w-[720px] px-12 py-10 ${this.isGenerating ? 'ff-stream-cursor' : ''}" data-rewrite="true">
+        <div class="mx-auto max-w-[720px] px-4 sm:px-8 lg:px-12 py-6 lg:py-10 ${this.isGenerating ? 'ff-stream-cursor' : ''}" data-rewrite="true">
 
           ${this._renderTitleHeader({
             title: u?.title ?? '',
@@ -1994,7 +2105,7 @@ class FFApp extends LitElement {
   private _renderQuiz(q: Quiz | null) {
     return html`
       <div class="flex-1 overflow-y-auto scrollbar-thin">
-        <div class="mx-auto max-w-[720px] px-12 py-10 ${this.isGenerating ? 'ff-stream-cursor' : ''}">
+        <div class="mx-auto max-w-[720px] px-4 sm:px-8 lg:px-12 py-6 lg:py-10 ${this.isGenerating ? 'ff-stream-cursor' : ''}">
           ${this._renderTitleHeader({
             title: q?.title ?? '',
             placeholder: 'Untitled quiz',
@@ -2153,7 +2264,7 @@ class FFApp extends LitElement {
     if (!content) {
       return html`
         <div class="flex-1 overflow-y-auto scrollbar-thin">
-          <div class="mx-auto max-w-[720px] px-12 py-10">
+          <div class="mx-auto max-w-[720px] px-4 sm:px-8 lg:px-12 py-6 lg:py-10">
             <p class="text-[12px] text-gray-400 mb-2 ${this.isGenerating ? 'ff-stream-cursor' : ''}">Streaming…</p>
             <pre class="text-[12px] text-gray-700 bg-gray-50 rounded-lg p-4 overflow-x-auto whitespace-pre-wrap">${this.output}</pre>
           </div>
@@ -2163,7 +2274,7 @@ class FFApp extends LitElement {
     const c = content as unknown as Record<string, unknown>
     return html`
       <div class="flex-1 overflow-y-auto scrollbar-thin">
-        <div class="mx-auto max-w-[720px] px-12 py-10 ${this.isGenerating ? 'ff-stream-cursor' : ''}">
+        <div class="mx-auto max-w-[720px] px-4 sm:px-8 lg:px-12 py-6 lg:py-10 ${this.isGenerating ? 'ff-stream-cursor' : ''}">
           ${c.title ? html`<h1 class="text-[24px] font-semibold mb-3">${c.title as string}</h1>` : ''}
           ${c.copy ? html`<div class="text-[15px] text-gray-700 leading-relaxed mb-6">${unsafeHTML(c.copy as string)}</div>` : ''}
           ${c.thumbnail_image ? html`<img src=${c.thumbnail_image as string} class="rounded-lg max-h-[200px] mb-4" alt="" />` : ''}
@@ -2278,6 +2389,7 @@ class FFApp extends LitElement {
           @blur=${onBlur}
         >${opts.asHtml ? unsafeHTML(opts.title) : opts.title}</h1>`
       : html`<h1
+          data-rewrite="true"
           data-placeholder=${opts.placeholder}
           class="text-[32px] font-semibold text-[#1a1a1a] leading-tight outline-none focus:bg-amber-50/40 rounded px-1 -mx-1 break-words"
           contenteditable=${this.isGenerating ? 'false' : 'true'}
@@ -2484,18 +2596,50 @@ class FFApp extends LitElement {
   @state() private _slashIndex = 0
 
   private _selListenerAttached = false
+  // Rising-edge tracking for modal open/close so we can manage focus.
+  private _prevKeyPromptOpen = false
+  private _prevLinkModalOpen = false
   override updated() {
-    if (this._selListenerAttached) return
-    this._selListenerAttached = true
-    document.addEventListener('mouseup', this._onSelection)
-    document.addEventListener('keyup', this._onSelection)
-    document.addEventListener('selectionchange', this._onSelectionChange)
-    document.addEventListener('mousedown', this._onOutsideMousedown, true)
-    document.addEventListener('keydown', this._onEditorKeydown, true)
-    document.addEventListener('input', this._onEditorInput as EventListener, true)
-    document.addEventListener('keydown', this._onUndoShortcut)
-    document.addEventListener('keydown', this._onEscape)
-    document.addEventListener('paste', this._onPaste, true)
+    if (!this._selListenerAttached) {
+      this._selListenerAttached = true
+      document.addEventListener('mouseup', this._onSelection)
+      document.addEventListener('keyup', this._onSelection)
+      document.addEventListener('selectionchange', this._onSelectionChange)
+      document.addEventListener('mousedown', this._onOutsideMousedown, true)
+      document.addEventListener('keydown', this._onEditorKeydown, true)
+      document.addEventListener('input', this._onEditorInput as EventListener, true)
+      document.addEventListener('keydown', this._onUndoShortcut)
+      document.addEventListener('keydown', this._onEscape)
+      document.addEventListener('paste', this._onPaste, true)
+    }
+
+    // Modal focus management: on open, save current focus + focus the modal
+    // input; on close, restore focus to what was focused before the modal.
+    const keyOpening = this.showKeyPrompt && !this._prevKeyPromptOpen
+    const keyClosing = !this.showKeyPrompt && this._prevKeyPromptOpen
+    const linkOpening = this._linkModalOpen && !this._prevLinkModalOpen
+    const linkClosing = !this._linkModalOpen && this._prevLinkModalOpen
+
+    if (keyOpening || linkOpening) {
+      const active = document.activeElement
+      if (active instanceof HTMLElement && active !== document.body) {
+        this._modalReturnFocus = active
+      }
+      requestAnimationFrame(() => {
+        const sel = keyOpening ? '[data-modal-autofocus="key"]' : '[data-modal-autofocus="link"]'
+        const input = this.querySelector(sel) as HTMLInputElement | null
+        input?.focus()
+        input?.select?.()
+      })
+    } else if (keyClosing || linkClosing) {
+      const target = this._modalReturnFocus
+      this._modalReturnFocus = null
+      if (target && document.contains(target)) {
+        try { target.focus() } catch { /* ignore */ }
+      }
+    }
+    this._prevKeyPromptOpen = this.showKeyPrompt
+    this._prevLinkModalOpen = this._linkModalOpen
   }
 
   /** Sanitize anything pasted into a contenteditable surface — strip the
@@ -2813,26 +2957,31 @@ class FFApp extends LitElement {
     const winW = window.innerWidth, winH = window.innerHeight
 
     let left: number
-    let top: number = Math.max(MARGIN, Math.min(winH - H - MARGIN, (r?.top ?? 60) - 4))
+    let top: number
 
     if (r) {
-      // 1) Right of selection
-      if (r.right + GAP + W <= winW - MARGIN) {
+      // Horizontal: align with selection's left edge, clamped to viewport
+      left = Math.max(MARGIN, Math.min(winW - W - MARGIN, r.left))
+      // Vertical: prefer above the selection (Notion/Docs pattern). Fall back
+      // to below, then right, then left when there isn't room.
+      if (r.top - GAP - H >= MARGIN) {
+        top = r.top - GAP - H
+      } else if (r.bottom + GAP + H <= winH - MARGIN) {
+        top = r.bottom + GAP
+      } else if (r.right + GAP + W <= winW - MARGIN) {
+        // Side fallback: align top with selection, clamp vertically
         left = r.right + GAP
-      // 2) Left of selection
+        top = Math.max(MARGIN, Math.min(winH - H - MARGIN, r.top))
       } else if (r.left - GAP - W >= MARGIN) {
         left = r.left - GAP - W
-      // 3) Below (or above if no room below)
+        top = Math.max(MARGIN, Math.min(winH - H - MARGIN, r.top))
       } else {
-        left = Math.max(MARGIN, Math.min(winW - W - MARGIN, r.left))
-        if (r.bottom + GAP + H <= winH - MARGIN) {
-          top = r.bottom + GAP
-        } else {
-          top = Math.max(MARGIN, r.top - GAP - H)
-        }
+        // Worst case: pin near the top of viewport
+        top = MARGIN
       }
     } else {
       left = MARGIN
+      top = MARGIN
     }
 
     return html`
@@ -3013,14 +3162,16 @@ class FFApp extends LitElement {
     )
     return html`
       <div class="fixed inset-0 bg-black/40 z-50 flex items-center justify-center"
-        @click=${(e: Event) => { if (e.target === e.currentTarget) this._linkModalOpen = false }}>
-        <div class="bg-white rounded-2xl shadow-2xl w-[560px] max-w-[calc(100vw-2rem)] mx-4 flex flex-col max-h-[70vh] ff-fade-in">
+        @click=${(e: Event) => { if (e.target === e.currentTarget) this._closeLinkModal() }}
+        @keydown=${(e: KeyboardEvent) => { if (e.key === 'Escape') { e.stopPropagation(); this._closeLinkModal() } }}>
+        <div class="bg-white rounded-2xl shadow-2xl w-[560px] max-w-[calc(100vw-2rem)] mx-4 flex flex-col max-h-[70vh] ff-fade-in"
+          role="dialog" aria-modal="true" aria-labelledby="ff-linkmodal-title">
           <div class="flex items-center justify-between px-5 py-3 border-b border-gray-100 shrink-0">
-            <h3 class="text-[15px] font-semibold text-[#1a1a1a]">Link to an article</h3>
-            <button @click=${() => { this._linkModalOpen = false }} class="text-gray-400 hover:text-gray-700 text-[18px]">×</button>
+            <h3 id="ff-linkmodal-title" class="text-[15px] font-semibold text-[#1a1a1a]">Link to an article</h3>
+            <button @click=${() => this._closeLinkModal()} class="text-gray-400 hover:text-gray-700 text-[18px]" aria-label="Close">×</button>
           </div>
           <div class="px-5 py-3 border-b border-gray-100 shrink-0">
-            <input type="text" autofocus
+            <input type="text" data-modal-autofocus="link"
               .value=${this._linkFilter}
               @input=${(e: Event) => { this._linkFilter = (e.target as HTMLInputElement).value }}
               placeholder="Search by title, topic, or slug…"
@@ -3196,7 +3347,7 @@ class FFApp extends LitElement {
     // While slash menu is open, capture nav keys
     if (this._slashOpen) {
       const items = this._filteredSlash()
-      if (e.key === 'Escape') { e.preventDefault(); this._closeSlash(); return }
+      if (e.key === 'Escape') { e.preventDefault(); this._closeSlash({ removeTrigger: true }); return }
       if (e.key === 'ArrowDown') { e.preventDefault(); this._slashIndex = Math.min(this._slashIndex + 1, Math.max(items.length - 1, 0)); return }
       if (e.key === 'ArrowUp')   { e.preventDefault(); this._slashIndex = Math.max(this._slashIndex - 1, 0); return }
       if (e.key === 'Enter') {
@@ -3208,8 +3359,8 @@ class FFApp extends LitElement {
       // Backspace handled by input event below to keep filter in sync
     }
 
-    // Trigger menu on "/"
-    if (!this._slashOpen && inEditor && e.key === '/') {
+    // Trigger menu on "/" — article only (other content types use structured renderers)
+    if (!this._slashOpen && inEditor && e.key === '/' && this.contentType === 'article') {
       // Let the "/" land in the DOM, then read its position
       setTimeout(() => this._openSlashMenu(), 0)
     }
@@ -3240,10 +3391,39 @@ class FFApp extends LitElement {
     void e
   }
 
-  private _closeSlash() {
+  private _closeSlash(opts: { removeTrigger?: boolean } = {}) {
+    if (opts.removeTrigger) this._removeSlashTrigger()
     this._slashOpen = false
     this._slashFilter = ''
     this._slashIndex = 0
+  }
+
+  /** Remove the "/" + filter chars at the current caret. Used when the user
+   *  dismisses the menu without inserting a block, so a stray "/" doesn't
+   *  remain in the body. */
+  private _removeSlashTrigger() {
+    const sel = window.getSelection()
+    if (!sel || !sel.anchorNode) return
+    const node = sel.anchorNode
+    if (node.nodeType !== Node.TEXT_NODE) return
+    const text = node.textContent ?? ''
+    const offset = sel.anchorOffset ?? 0
+    const slashIdx = text.lastIndexOf('/', Math.max(0, offset - 1))
+    if (slashIdx === -1) return
+    const range = document.createRange()
+    range.setStart(node, slashIdx)
+    range.setEnd(node, offset)
+    sel.removeAllRanges()
+    sel.addRange(range)
+    document.execCommand('delete')
+    // Sync the markdown buffer for article body so undo/save reflect the removal
+    let parent: Node | null = sel.anchorNode
+    while (parent && parent.nodeType !== 1) parent = parent.parentNode
+    const editor = parent && (parent as HTMLElement).closest('[data-rewrite="true"]') as HTMLElement | null
+    if (editor && this.contentType === 'article') {
+      const md = htmlToMarkdown(editor.innerHTML)
+      if (md !== this.output) { this.output = md; this.isDirty = true }
+    }
   }
 
   /** Replace the "/" + filter chars at cursor with the chosen block HTML. */
@@ -3324,17 +3504,21 @@ class FFApp extends LitElement {
   // ── API key prompt ─────────────────────────────────────────────────────────
   private _renderKeyPrompt() {
     return html`
-      <div class="fixed inset-0 bg-black/40 z-50 flex items-center justify-center">
-        <div class="bg-white rounded-2xl shadow-2xl w-[440px] mx-4 p-6 ff-fade-in">
-          <h3 class="text-[16px] font-semibold mb-1">Anthropic API key</h3>
+      <div class="fixed inset-0 bg-black/40 z-50 flex items-center justify-center"
+        @click=${(e: Event) => { if (e.target === e.currentTarget) this._closeKeyPrompt() }}
+        @keydown=${(e: KeyboardEvent) => { if (e.key === 'Escape') { e.stopPropagation(); this._closeKeyPrompt() } }}>
+        <div class="bg-white rounded-2xl shadow-2xl w-[440px] max-w-[calc(100vw-2rem)] mx-4 p-6 ff-fade-in"
+          role="dialog" aria-modal="true" aria-labelledby="ff-keyprompt-title">
+          <h3 id="ff-keyprompt-title" class="text-[16px] font-semibold mb-1">Anthropic API key</h3>
           <p class="text-[12px] text-gray-500 mb-4">v2 uses your API key to call Claude directly from the browser. Stored in localStorage on this machine — same key the live app uses.</p>
-          <input type="password" .value=${this.keyDraft} autofocus
+          <input type="password" data-modal-autofocus="key" .value=${this.keyDraft}
             @input=${(e: Event) => { this.keyDraft = (e.target as HTMLInputElement).value }}
             @keydown=${(e: KeyboardEvent) => { if (e.key === 'Enter' && this.keyDraft.trim()) this._saveApiKey() }}
             placeholder="sk-ant-…"
+            aria-label="Anthropic API key"
             class="w-full rounded-lg border border-gray-200 px-3 py-2.5 text-[13px] font-mono outline-none focus:border-gray-400 mb-4" />
           <div class="flex justify-end gap-2">
-            <button @click=${() => { this.showKeyPrompt = false }}
+            <button @click=${() => this._closeKeyPrompt()}
               class="text-[12px] text-gray-500 hover:text-gray-700 px-3 py-1.5">Cancel</button>
             <button @click=${() => this._saveApiKey()}
               ?disabled=${!this.keyDraft.trim()}
@@ -3343,6 +3527,14 @@ class FFApp extends LitElement {
         </div>
       </div>
     `
+  }
+
+  private _closeKeyPrompt() {
+    this.showKeyPrompt = false
+  }
+
+  private _closeLinkModal() {
+    this._linkModalOpen = false
   }
 }
 
