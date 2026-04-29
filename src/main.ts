@@ -45,7 +45,9 @@ import {
   type ContentEntry,
   type ContentStatus,
 } from './lib/store'
+import type { ContentSource } from './lib/store'
 import { loadArticles } from './lib/articles'
+import { CATEGORIES, CURATED_CATEGORIES } from './lib/taxonomy'
 import './components/ff-library'
 
 // ── Type list / labels — overrides for the v2 UI ────────────────────────────
@@ -212,6 +214,7 @@ class FFApp extends LitElement {
     this.mode = 'editor'
     this.creationMode = 'ai'
     this._currentStatus = entry.status ?? 'draft'
+    this._hydrateMeta(entry)
     this._undoStack = []
     this._redoStack = []
   }
@@ -257,6 +260,7 @@ class FFApp extends LitElement {
     this.lastRequest = null
     this.isDirty = false
     this._currentStatus = 'draft'
+    this._resetMeta()
     this._undoStack = []
     this._redoStack = []
   }
@@ -388,6 +392,8 @@ class FFApp extends LitElement {
       this.editingId = c.id
       this._currentStatus = c.status
     }
+    // Push the right-rail metadata into the saved entry.
+    if (this.editingId) patchEntry(this.editingId, this._metaPatch())
     this.isDirty = false
     this._refreshEntries()
   }
@@ -416,33 +422,382 @@ class FFApp extends LitElement {
   /** Track the editing entry's status so the right-rail pill is honest. */
   @state() private _currentStatus: ContentStatus = 'draft'
 
-  /** Compile current output to HTML / Markdown / JSON for download or copy. */
-  private _exportHtml() {
-    if (!this.output.trim()) return
-    let body: string
-    let ext: string
-    let mime: string
-    if (this.contentType === 'article') {
-      const md = stripPublishingSections(this.output)
-      body = (marked.parse(md) as string).trim()
-      ext = 'html'
-      mime = 'text/html'
-    } else {
-      const parsed = parseJsonContent(this.output)
-      body = parsed ? JSON.stringify(parsed, null, 2) : this.output
-      ext = 'json'
-      mime = 'application/json'
+  // ── Right-rail metadata (mirrors ContentEntry — synced on load/save) ───────
+  // The 5 fields a writer touches every day. Visible by default.
+  @state() private _slug = ''
+  @state() private _excerpt = ''
+  @state() private _categories: string[] = []
+  @state() private _seoArticle = ''                   // long-form copy fed to the AI as source material
+  @state() private _sources: ContentSource[] = []     // citations / references for this piece
+
+  // Advanced fields — collapsed behind a disclosure by default.
+  @state() private _author = ''
+  @state() private _client = ''
+  @state() private _curatedCategories: string[] = []
+  @state() private _referenceLink = ''
+  @state() private _mimeType: 'HTML' | 'Markdown' | 'Plain Text' = 'HTML'
+  @state() private _priority = 0
+  @state() private _excludeClientsText = ''           // comma-separated for the input
+  @state() private _showInLibrary = true
+  @state() private _redirect = ''
+  @state() private _source = 'Financial Finesse'
+  @state() private _paidContent = false
+  @state() private _legacyId = ''
+  @state() private _excludeSmartBenefits = false
+
+  // Disclosure toggles
+  @state() private _showAdvanced = false
+  @state() private _showSeoArticle = false            // Long-form copy textarea collapsed by default — it's huge
+
+  /** Hydrate the right-rail metadata from a loaded entry. */
+  private _hydrateMeta(entry: ContentEntry) {
+    this._slug = entry.slug ?? ''
+    this._excerpt = entry.excerpt ?? ''
+    this._categories = entry.categories ?? []
+    this._seoArticle = entry.seoArticle ?? ''
+    this._sources = entry.sources ?? []
+    this._author = entry.author ?? ''
+    this._client = entry.client ?? ''
+    this._curatedCategories = entry.curatedCategories ?? []
+    this._referenceLink = entry.referenceLink ?? ''
+    this._mimeType = entry.mimeType ?? 'HTML'
+    this._priority = entry.priority ?? 0
+    this._excludeClientsText = (entry.excludeClients ?? []).join(', ')
+    this._showInLibrary = entry.showInLibrary ?? true
+    this._redirect = entry.redirect ?? ''
+    this._source = entry.source ?? 'Financial Finesse'
+    this._paidContent = entry.paidContent ?? false
+    this._legacyId = entry.legacyId ?? ''
+    this._excludeSmartBenefits = entry.excludeSmartBenefits ?? false
+  }
+
+  /** Reset all right-rail metadata back to defaults (called from `_newContent`). */
+  private _resetMeta() {
+    this._slug = ''
+    this._excerpt = ''
+    this._categories = []
+    this._seoArticle = ''
+    this._sources = []
+    this._author = ''
+    this._client = ''
+    this._curatedCategories = []
+    this._referenceLink = ''
+    this._mimeType = 'HTML'
+    this._priority = 0
+    this._excludeClientsText = ''
+    this._showInLibrary = true
+    this._redirect = ''
+    this._source = 'Financial Finesse'
+    this._paidContent = false
+    this._legacyId = ''
+    this._excludeSmartBenefits = false
+    this._showAdvanced = false
+    this._showSeoArticle = false
+  }
+
+  /** Build a Partial<ContentEntry> patch from the current right-rail state. */
+  private _metaPatch(): Partial<ContentEntry> {
+    return {
+      slug: this._slug,
+      excerpt: this._excerpt,
+      categories: this._categories,
+      seoArticle: this._seoArticle,
+      sources: this._sources,
+      author: this._author,
+      client: this._client,
+      curatedCategories: this._curatedCategories,
+      referenceLink: this._referenceLink,
+      mimeType: this._mimeType,
+      priority: this._priority,
+      excludeClients: this._excludeClientsText.split(',').map(s => s.trim()).filter(Boolean),
+      showInLibrary: this._showInLibrary,
+      redirect: this._redirect,
+      source: this._source,
+      paidContent: this._paidContent,
+      legacyId: this._legacyId,
+      excludeSmartBenefits: this._excludeSmartBenefits,
     }
-    const blob = new Blob([body], { type: mime })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    const slug = (this.topic || 'untitled').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60) || 'untitled'
-    a.href = url
-    a.download = `${slug}.${ext}`
-    document.body.appendChild(a)
-    a.click()
-    a.remove()
-    setTimeout(() => URL.revokeObjectURL(url), 0)
+  }
+
+  /** Toggle a category path on/off. Path uses "Parent/Child" format. */
+  private _toggleCategory(path: string) {
+    const has = this._categories.includes(path)
+    this._categories = has ? this._categories.filter(c => c !== path) : [...this._categories, path]
+    this.isDirty = true
+  }
+
+  private _toggleCuratedCategory(label: string) {
+    const has = this._curatedCategories.includes(label)
+    this._curatedCategories = has ? this._curatedCategories.filter(c => c !== label) : [...this._curatedCategories, label]
+    this.isDirty = true
+  }
+
+  private _addSource() {
+    this._sources = [...this._sources, { title: '', url: '', note: '' }]
+    this.isDirty = true
+  }
+
+  private _updateSource(idx: number, field: keyof ContentSource, value: string) {
+    this._sources = this._sources.map((s, i) => i === idx ? { ...s, [field]: value } : s)
+    this.isDirty = true
+  }
+
+  private _removeSource(idx: number) {
+    this._sources = this._sources.filter((_, i) => i !== idx)
+    this.isDirty = true
+  }
+
+  // ── Right-rail metadata panel ─────────────────────────────────────────────
+  // SIMPLE by default: 3 fields (slug, excerpt, categories) + the two new
+  // pieces (long-form copy, sources). Power-user fields hide behind "Advanced".
+
+  private _renderMetadataPanel() {
+    return html`
+      <!-- Publishing -->
+      <div class="border-t border-gray-100 pt-4 flex flex-col gap-3">
+        <p class="text-[10px] font-bold tracking-widest uppercase text-gray-400">Publishing</p>
+
+        <div class="flex flex-col gap-1">
+          <label class="text-[11px] font-semibold text-gray-700">URL slug</label>
+          <input type="text" .value=${this._slug}
+            @input=${(e: Event) => { this._slug = (e.target as HTMLInputElement).value; this.isDirty = true }}
+            placeholder="auto-from-title"
+            class="w-full rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-[12px] outline-none focus:border-gray-400" />
+        </div>
+
+        <div class="flex flex-col gap-1">
+          <label class="text-[11px] font-semibold text-gray-700">Excerpt</label>
+          <textarea .value=${this._excerpt}
+            @input=${(e: Event) => { this._excerpt = (e.target as HTMLTextAreaElement).value; this.isDirty = true }}
+            rows="3"
+            placeholder="One-sentence summary shown in the library"
+            class="w-full rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-[12px] outline-none focus:border-gray-400 resize-none"></textarea>
+        </div>
+      </div>
+
+      <!-- Categories -->
+      <div class="border-t border-gray-100 pt-4 flex flex-col gap-2">
+        <p class="text-[10px] font-bold tracking-widest uppercase text-gray-400">Categories</p>
+        <p class="text-[11px] text-gray-500 leading-snug">Pick where this lives in the library.</p>
+        <div class="max-h-44 overflow-y-auto pr-1 flex flex-col gap-1.5 scrollbar-thin">
+          ${CATEGORIES.map(group => html`
+            <div class="flex flex-col gap-0.5">
+              <p class="text-[11px] font-semibold text-gray-700">${group.label}</p>
+              ${group.children.length ? group.children.map(child => {
+                const path = `${group.label}/${child}`
+                const checked = this._categories.includes(path)
+                return html`
+                  <label class="flex items-center gap-1.5 pl-2 text-[11.5px] text-gray-600 hover:text-gray-900 cursor-pointer">
+                    <input type="checkbox" .checked=${checked}
+                      @change=${() => this._toggleCategory(path)}
+                      class="h-3 w-3 rounded border-gray-300" />
+                    ${child}
+                  </label>
+                `
+              }) : html`
+                <label class="flex items-center gap-1.5 pl-2 text-[11.5px] text-gray-600 hover:text-gray-900 cursor-pointer">
+                  <input type="checkbox" .checked=${this._categories.includes(group.label)}
+                    @change=${() => this._toggleCategory(group.label)}
+                    class="h-3 w-3 rounded border-gray-300" />
+                  ${group.label}
+                </label>
+              `}
+            </div>
+          `)}
+        </div>
+      </div>
+
+      <!-- AI source material — long-form copy -->
+      <div class="border-t border-gray-100 pt-4 flex flex-col gap-2">
+        <button @click=${() => this._showSeoArticle = !this._showSeoArticle}
+          class="flex items-center justify-between text-left">
+          <p class="text-[10px] font-bold tracking-widest uppercase text-gray-400">Long-form source <span class="text-[#063853] normal-case tracking-normal font-semibold ml-1">${this._seoArticle ? '·  ' + this._seoArticle.length.toLocaleString() + ' chars' : ''}</span></p>
+          <svg width="10" height="10" viewBox="0 0 12 12" fill="none" class="text-gray-400 ${this._showSeoArticle ? 'rotate-90' : ''} transition-transform">
+            <path d="M4 2l4 4-4 4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </button>
+        <p class="text-[11px] text-gray-500 leading-snug">Paste a full article. AI will use it as source material when writing shorter pieces.</p>
+        ${this._showSeoArticle ? html`
+          <textarea .value=${this._seoArticle}
+            @input=${(e: Event) => { this._seoArticle = (e.target as HTMLTextAreaElement).value; this.isDirty = true }}
+            rows="8"
+            placeholder="Paste the long-form article here…"
+            class="w-full rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-[11.5px] leading-relaxed outline-none focus:border-gray-400 resize-y font-mono"></textarea>
+        ` : ''}
+      </div>
+
+      <!-- Sources -->
+      <div class="border-t border-gray-100 pt-4 flex flex-col gap-2">
+        <div class="flex items-center justify-between">
+          <p class="text-[10px] font-bold tracking-widest uppercase text-gray-400">Sources <span class="text-[#063853] normal-case tracking-normal font-semibold ml-1">${this._sources.length || ''}</span></p>
+          <button @click=${() => this._addSource()}
+            class="text-[11px] text-[#063853] hover:underline font-semibold">+ Add</button>
+        </div>
+        <p class="text-[11px] text-gray-500 leading-snug">Where does the information come from? AI auto-fills these when it cites a source — edit or add your own.</p>
+        ${this._sources.length === 0 ? html`
+          <div class="rounded-md border border-dashed border-gray-200 px-3 py-3 text-center">
+            <p class="text-[11px] text-gray-400">No sources yet</p>
+          </div>
+        ` : this._sources.map((s, i) => html`
+          <div class="rounded-md border border-gray-200 bg-white p-2 flex flex-col gap-1.5 group/src">
+            <div class="flex items-start gap-1">
+              <input type="text" .value=${s.title}
+                @input=${(e: Event) => this._updateSource(i, 'title', (e.target as HTMLInputElement).value)}
+                placeholder="Source title"
+                class="flex-1 rounded-md border-0 bg-transparent px-1 py-0.5 text-[12px] font-semibold outline-none focus:bg-gray-50" />
+              <button @click=${() => this._removeSource(i)}
+                class="opacity-0 group-hover/src:opacity-100 text-gray-300 hover:text-red-500 text-[14px] leading-none px-1 transition-opacity" title="Remove">×</button>
+            </div>
+            <input type="url" .value=${s.url}
+              @input=${(e: Event) => this._updateSource(i, 'url', (e.target as HTMLInputElement).value)}
+              placeholder="https://…"
+              class="rounded-md border-0 bg-transparent px-1 py-0.5 text-[11px] text-blue-600 outline-none focus:bg-gray-50" />
+            <input type="text" .value=${s.note}
+              @input=${(e: Event) => this._updateSource(i, 'note', (e.target as HTMLInputElement).value)}
+              placeholder="What did this source provide?"
+              class="rounded-md border-0 bg-transparent px-1 py-0.5 text-[11px] text-gray-500 outline-none focus:bg-gray-50" />
+          </div>
+        `)}
+      </div>
+
+      <!-- Advanced toggle -->
+      <div class="border-t border-gray-100 pt-4">
+        <button @click=${() => this._showAdvanced = !this._showAdvanced}
+          class="w-full flex items-center justify-between text-left">
+          <p class="text-[10px] font-bold tracking-widest uppercase text-gray-400">Advanced</p>
+          <svg width="10" height="10" viewBox="0 0 12 12" fill="none" class="text-gray-400 ${this._showAdvanced ? 'rotate-90' : ''} transition-transform">
+            <path d="M4 2l4 4-4 4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </button>
+        ${this._showAdvanced ? this._renderAdvancedFields() : ''}
+      </div>
+    `
+  }
+
+  private _renderAdvancedFields() {
+    const labelCls = "text-[11px] font-semibold text-gray-700"
+    const inputCls = "w-full rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-[12px] outline-none focus:border-gray-400"
+    return html`
+      <div class="mt-3 flex flex-col gap-3">
+        <div class="flex flex-col gap-1">
+          <label class=${labelCls}>Author</label>
+          <input type="text" .value=${this._author}
+            @input=${(e: Event) => { this._author = (e.target as HTMLInputElement).value; this.isDirty = true }}
+            placeholder="Name or email" class=${inputCls} />
+        </div>
+
+        <div class="grid grid-cols-2 gap-2">
+          <div class="flex flex-col gap-1">
+            <label class=${labelCls}>Region</label>
+            <select .value=${this.region}
+              @change=${(e: Event) => { this.region = (e.target as HTMLSelectElement).value; this.isDirty = true }}
+              class=${inputCls + ' cursor-pointer'}>
+              <option>United States</option><option>Canada</option><option>United Kingdom</option>
+            </select>
+          </div>
+          <div class="flex flex-col gap-1">
+            <label class=${labelCls}>Language</label>
+            <select .value=${this.language}
+              @change=${(e: Event) => { this.language = (e.target as HTMLSelectElement).value; this.isDirty = true }}
+              class=${inputCls + ' cursor-pointer'}>
+              <option>English</option><option>Spanish</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="flex flex-col gap-1">
+          <label class=${labelCls}>Source provider</label>
+          <input type="text" .value=${this._source}
+            @input=${(e: Event) => { this._source = (e.target as HTMLInputElement).value; this.isDirty = true }}
+            class=${inputCls} />
+        </div>
+
+        <div class="flex flex-col gap-1">
+          <label class=${labelCls}>Client</label>
+          <input type="text" .value=${this._client}
+            @input=${(e: Event) => { this._client = (e.target as HTMLInputElement).value; this.isDirty = true }}
+            placeholder="(blank = all clients)" class=${inputCls} />
+        </div>
+
+        <div class="flex flex-col gap-1">
+          <label class=${labelCls}>Reference link</label>
+          <input type="url" .value=${this._referenceLink}
+            @input=${(e: Event) => { this._referenceLink = (e.target as HTMLInputElement).value; this.isDirty = true }}
+            placeholder="https://…" class=${inputCls} />
+        </div>
+
+        <div class="flex flex-col gap-1">
+          <label class=${labelCls}>Redirect URL</label>
+          <input type="url" .value=${this._redirect}
+            @input=${(e: Event) => { this._redirect = (e.target as HTMLInputElement).value; this.isDirty = true }}
+            placeholder="(empty = no redirect)" class=${inputCls} />
+        </div>
+
+        <div class="grid grid-cols-2 gap-2">
+          <div class="flex flex-col gap-1">
+            <label class=${labelCls}>Mime type</label>
+            <select .value=${this._mimeType}
+              @change=${(e: Event) => { this._mimeType = (e.target as HTMLSelectElement).value as 'HTML' | 'Markdown' | 'Plain Text'; this.isDirty = true }}
+              class=${inputCls + ' cursor-pointer'}>
+              <option>HTML</option><option>Markdown</option><option>Plain Text</option>
+            </select>
+          </div>
+          <div class="flex flex-col gap-1">
+            <label class=${labelCls}>Priority</label>
+            <input type="number" min="0" max="100" .value=${String(this._priority)}
+              @input=${(e: Event) => { this._priority = Number((e.target as HTMLInputElement).value) || 0; this.isDirty = true }}
+              class=${inputCls} />
+          </div>
+        </div>
+
+        <div class="flex flex-col gap-1">
+          <label class=${labelCls}>Exclude clients</label>
+          <input type="text" .value=${this._excludeClientsText}
+            @input=${(e: Event) => { this._excludeClientsText = (e.target as HTMLInputElement).value; this.isDirty = true }}
+            placeholder="Comma-separated client IDs" class=${inputCls} />
+        </div>
+
+        <div class="flex flex-col gap-1">
+          <label class=${labelCls}>Legacy ID</label>
+          <input type="text" .value=${this._legacyId}
+            @input=${(e: Event) => { this._legacyId = (e.target as HTMLInputElement).value; this.isDirty = true }}
+            placeholder="(if migrated)" class=${inputCls} />
+        </div>
+
+        <div class="flex flex-col gap-2 pt-1">
+          <label class="flex items-center gap-2 text-[12px] text-gray-700 cursor-pointer">
+            <input type="checkbox" .checked=${this._showInLibrary}
+              @change=${(e: Event) => { this._showInLibrary = (e.target as HTMLInputElement).checked; this.isDirty = true }}
+              class="h-3.5 w-3.5 rounded border-gray-300" />
+            Show in library
+          </label>
+          <label class="flex items-center gap-2 text-[12px] text-gray-700 cursor-pointer">
+            <input type="checkbox" .checked=${this._paidContent}
+              @change=${(e: Event) => { this._paidContent = (e.target as HTMLInputElement).checked; this.isDirty = true }}
+              class="h-3.5 w-3.5 rounded border-gray-300" />
+            Paid content
+          </label>
+          <label class="flex items-center gap-2 text-[12px] text-gray-700 cursor-pointer">
+            <input type="checkbox" .checked=${this._excludeSmartBenefits}
+              @change=${(e: Event) => { this._excludeSmartBenefits = (e.target as HTMLInputElement).checked; this.isDirty = true }}
+              class="h-3.5 w-3.5 rounded border-gray-300" />
+            Exclude from SmartBenefits
+          </label>
+        </div>
+
+        <div class="flex flex-col gap-1.5 pt-1 border-t border-gray-100">
+          <label class=${labelCls}>Curated categories</label>
+          ${CURATED_CATEGORIES.map(label => html`
+            <label class="flex items-center gap-1.5 text-[11.5px] text-gray-600 cursor-pointer">
+              <input type="checkbox" .checked=${this._curatedCategories.includes(label)}
+                @change=${() => this._toggleCuratedCategory(label)}
+                class="h-3 w-3 rounded border-gray-300" />
+              ${label}
+            </label>
+          `)}
+        </div>
+      </div>
+    `
   }
 
   /** Switching content type mid-flow when the existing output is incompatible
@@ -788,15 +1143,9 @@ class FFApp extends LitElement {
               ${this._currentStatus === 'published' ? '' : html`<svg width="11" height="11" viewBox="0 0 12 12" fill="none"><path d="M3 6h6m-2-3l3 3-3 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`}
             </button>
 
-            <!-- Export -->
-            <button
-              @click=${() => this._exportHtml()}
-              ?disabled=${!this.output.trim() || this.isGenerating}
-              class="w-full px-4 py-2 rounded-lg text-[12px] font-semibold text-gray-600 hover:text-[#063853] border border-gray-200 hover:border-[#063853] transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-1.5">
-              <svg width="11" height="11" viewBox="0 0 14 14" fill="none"><path d="M7 1.5v8m0 0L4 6.5m3 3l3-3M2 11.5h10" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
-              Export ${this.contentType === 'article' ? 'HTML' : 'JSON'}
-            </button>
-            <p class="text-[11px] text-gray-400 text-center">${this.output.trim() ? 'Saves to library and marks as published.' : 'Generate or write a draft first'}</p>
+            <p class="text-[11px] text-gray-400 text-center">${this.output.trim() ? 'Save your draft, then publish when it\'s ready.' : 'Generate or write a draft first'}</p>
+
+            ${this.output ? this._renderMetadataPanel() : ''}
 
             ${this.contentType === 'article' && this.output ? html`
               <div class="border-t border-gray-100 pt-4 flex flex-col gap-2">
