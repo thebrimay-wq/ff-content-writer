@@ -379,6 +379,19 @@ export function getHiddenIds(): Set<string> {
 function deriveTitle(topic: string, output: string): string {
   const t = topic.trim()
   if (t) return t.length > 80 ? t.slice(0, 77) + '…' : t
+  // For JSON-backed types, peek into the parsed object for a `title` field.
+  const trimmed = output.trim()
+  if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+    try {
+      const parsed = JSON.parse(trimmed)
+      const jsonTitle = (parsed?.title ?? parsed?._extras?.title)
+      if (typeof jsonTitle === 'string' && jsonTitle.trim()) {
+        // Strip any inline highlight tags from Money Tip titles.
+        const plain = jsonTitle.replace(/<[^>]+>/g, '').trim()
+        if (plain) return plain.length > 80 ? plain.slice(0, 77) + '…' : plain
+      }
+    } catch { /* ignore */ }
+  }
   const firstLine = output.split('\n').map(l => l.trim()).find(Boolean) ?? ''
   const cleaned = firstLine.replace(/^#+\s*/, '').replace(/^[-*]\s*/, '')
   if (!cleaned) return 'Untitled draft'

@@ -211,6 +211,7 @@ class FFApp extends LitElement {
     this.tab = 'new'
     this.mode = 'editor'
     this.creationMode = 'ai'
+    this._currentStatus = entry.status ?? 'draft'
     this._undoStack = []
     this._redoStack = []
   }
@@ -255,6 +256,7 @@ class FFApp extends LitElement {
     this.error = ''
     this.lastRequest = null
     this.isDirty = false
+    this._currentStatus = 'draft'
     this._undoStack = []
     this._redoStack = []
   }
@@ -380,10 +382,11 @@ class FFApp extends LitElement {
     }
     if (this.editingId) {
       const u = updateEntry(this.editingId, payload)
-      if (u) this.editingId = u.id
+      if (u) { this.editingId = u.id; this._currentStatus = u.status }
     } else {
       const c = createEntry(payload)
       this.editingId = c.id
+      this._currentStatus = c.status
     }
     this.isDirty = false
     this._refreshEntries()
@@ -397,6 +400,84 @@ class FFApp extends LitElement {
     this.showKeyPrompt = false
     // Continue the generate that triggered the prompt
     if (this.topic.trim()) this._generate()
+  }
+
+  /** Persist if needed, then flip status to published. */
+  private _publish() {
+    if (!this.output.trim() || this.isGenerating) return
+    // Save first so we have an editingId to patch.
+    if (!this.editingId || this.isDirty) this._save()
+    if (!this.editingId) return
+    patchEntry(this.editingId, { status: 'published', publishedAt: Date.now() })
+    this._currentStatus = 'published'
+    this._refreshEntries()
+  }
+
+  /** Track the editing entry's status so the right-rail pill is honest. */
+  @state() private _currentStatus: ContentStatus = 'draft'
+
+  /** Compile current output to HTML / Markdown / JSON for download or copy. */
+  private _exportHtml() {
+    if (!this.output.trim()) return
+    let body: string
+    let ext: string
+    let mime: string
+    if (this.contentType === 'article') {
+      const md = stripPublishingSections(this.output)
+      body = (marked.parse(md) as string).trim()
+      ext = 'html'
+      mime = 'text/html'
+    } else {
+      const parsed = parseJsonContent(this.output)
+      body = parsed ? JSON.stringify(parsed, null, 2) : this.output
+      ext = 'json'
+      mime = 'application/json'
+    }
+    const blob = new Blob([body], { type: mime })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    const slug = (this.topic || 'untitled').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60) || 'untitled'
+    a.href = url
+    a.download = `${slug}.${ext}`
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    setTimeout(() => URL.revokeObjectURL(url), 0)
+  }
+
+  /** Switching content type mid-flow when the existing output is incompatible
+   *  with the new type would leave a broken render. Migrate / clear safely. */
+  private _changeContentType(next: string) {
+    if (next === this.contentType) return
+    const had = this.output.trim()
+    const wasArticle = this.contentType === 'article'
+    const goingArticle = next === 'article'
+    let proceed = true
+    if (had) {
+      // Different shape (article ↔ JSON) means we can't preserve it; warn first.
+      if (wasArticle !== goingArticle) {
+        proceed = window.confirm(
+          `Switching to "${V2_TYPE_LABELS[next] ?? next}" will replace the current draft with an empty ${V2_TYPE_LABELS[next] ?? next}. Continue?`,
+        )
+        if (!proceed) return
+        this._pushUndo()
+        this.output = goingArticle ? '' : JSON.stringify(emptyContentForType(next), null, 2)
+        this.isDirty = true
+      } else if (!goingArticle) {
+        // JSON → JSON: replace shell, keep title if present.
+        this._pushUndo()
+        let priorTitle = ''
+        try {
+          const parsed = JSON.parse(this.output)
+          if (typeof parsed?.title === 'string') priorTitle = parsed.title
+        } catch { /* ignore */ }
+        const shell = emptyContentForType(next) as unknown as Record<string, unknown>
+        if (priorTitle && 'title' in shell) shell.title = priorTitle
+        this.output = JSON.stringify(shell, null, 2)
+        this.isDirty = true
+      }
+    }
+    this.contentType = next
   }
 
   override render() {
@@ -574,7 +655,7 @@ class FFApp extends LitElement {
               <label class="text-[10px] font-bold tracking-widest uppercase text-[#383838]">Content type</label>
               <div class="relative">
                 <select .value=${this.contentType}
-                  @change=${(e: Event) => { this.contentType = (e.target as HTMLSelectElement).value }}
+                  @change=${(e: Event) => this._changeContentType((e.target as HTMLSelectElement).value)}
                   ?disabled=${this.isGenerating}
                   class="w-full appearance-none rounded-lg border border-gray-200 bg-white px-3.5 py-2.5 text-[14px] outline-none focus:border-gray-400 pr-9 cursor-pointer disabled:opacity-50">
                   ${Object.entries(V2_TYPE_LABELS).map(([k, v]) => html`<option value=${k} ?selected=${k === this.contentType}>${v}</option>`)}
@@ -671,14 +752,24 @@ class FFApp extends LitElement {
 
             <!-- Status -->
             <div class="flex items-center gap-2">
-              <span class="inline-flex items-center gap-1.5 text-[11px] font-semibold px-2.5 py-1 rounded-full bg-gray-100 text-gray-500">
-                <span class="h-1.5 w-1.5 rounded-full bg-current opacity-80"></span>
-                Draft
-                ${this.isGenerating ? html`<span class="text-gray-400 font-normal ml-1">· generating…</span>` :
-                  this.isDirty ? html`<span class="text-amber-600 font-normal ml-1">· unsaved</span>` :
-                  this.editingId ? html`<span class="text-gray-400 font-normal ml-1">· saved</span>` : ''
-                }
-              </span>
+              ${(() => {
+                const s = this._currentStatus
+                const label = ({ draft: 'Draft', in_review: 'In review', approved: 'Approved', published: 'Published', trash: 'Trash' } as Record<string,string>)[s] ?? 'Draft'
+                const tone = s === 'published' ? 'bg-emerald-50 text-emerald-700'
+                  : s === 'approved' ? 'bg-blue-50 text-blue-700'
+                  : s === 'in_review' ? 'bg-amber-50 text-amber-700'
+                  : 'bg-gray-100 text-gray-500'
+                return html`
+                  <span class="inline-flex items-center gap-1.5 text-[11px] font-semibold px-2.5 py-1 rounded-full ${tone}">
+                    <span class="h-1.5 w-1.5 rounded-full bg-current opacity-80"></span>
+                    ${label}
+                    ${this.isGenerating ? html`<span class="opacity-70 font-normal ml-1">· generating…</span>` :
+                      this.isDirty ? html`<span class="text-amber-600 font-normal ml-1">· unsaved</span>` :
+                      this.editingId ? html`<span class="opacity-70 font-normal ml-1">· saved</span>` : ''
+                    }
+                  </span>
+                `
+              })()}
             </div>
 
             <!-- Save -->
@@ -690,12 +781,22 @@ class FFApp extends LitElement {
 
             <!-- Publish -->
             <button
+              @click=${() => this._publish()}
               ?disabled=${!this.output.trim() || this.isGenerating}
               class="w-full px-4 py-3 rounded-lg bg-[#063853] hover:bg-[#04293D] text-white text-[13px] font-semibold transition-colors flex items-center justify-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed">
-              Publish this
-              <svg width="11" height="11" viewBox="0 0 12 12" fill="none"><path d="M3 6h6m-2-3l3 3-3 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              ${this._currentStatus === 'published' ? 'Published ✓' : 'Publish this'}
+              ${this._currentStatus === 'published' ? '' : html`<svg width="11" height="11" viewBox="0 0 12 12" fill="none"><path d="M3 6h6m-2-3l3 3-3 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`}
             </button>
-            <p class="text-[11px] text-gray-400 text-center">${this.output.trim() ? '3 fields will be auto-filled' : 'Generate a draft first'}</p>
+
+            <!-- Export -->
+            <button
+              @click=${() => this._exportHtml()}
+              ?disabled=${!this.output.trim() || this.isGenerating}
+              class="w-full px-4 py-2 rounded-lg text-[12px] font-semibold text-gray-600 hover:text-[#063853] border border-gray-200 hover:border-[#063853] transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-1.5">
+              <svg width="11" height="11" viewBox="0 0 14 14" fill="none"><path d="M7 1.5v8m0 0L4 6.5m3 3l3-3M2 11.5h10" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              Export ${this.contentType === 'article' ? 'HTML' : 'JSON'}
+            </button>
+            <p class="text-[11px] text-gray-400 text-center">${this.output.trim() ? 'Saves to library and marks as published.' : 'Generate or write a draft first'}</p>
 
             ${this.contentType === 'article' && this.output ? html`
               <div class="border-t border-gray-100 pt-4 flex flex-col gap-2">
@@ -978,6 +1079,53 @@ class FFApp extends LitElement {
     this._updateJson<any>(c => ({ ...c, [field]: value }))
   }
 
+  /** Reusable image upload control for thumbnail / hero fields. */
+  private _renderImageUploader(opts: {
+    label: string
+    value: string
+    onChange: (dataUrl: string) => void
+    onRemove: () => void
+    height?: string
+  }) {
+    const h = opts.height ?? 'h-32'
+    return html`
+      <div class="flex flex-col gap-1.5">
+        <label class="text-[10px] font-bold tracking-widest uppercase text-gray-500">${opts.label}</label>
+        ${opts.value ? html`
+          <div class="relative rounded-lg border border-gray-200 overflow-hidden inline-block">
+            <img src=${opts.value} class="${h} w-auto block max-w-full" alt="" />
+            <button @click=${opts.onRemove}
+              class="absolute top-2 right-2 text-[11px] bg-white/95 border border-gray-200 hover:border-red-300 text-gray-600 hover:text-red-500 px-2 py-1 rounded-md">
+              Remove
+            </button>
+          </div>
+        ` : html`
+          <div class="flex flex-col gap-2">
+            <label class="cursor-pointer bg-gray-50 hover:bg-gray-100 transition-colors rounded-lg p-5 text-center border-2 border-dashed border-gray-200 hover:border-gray-300 block">
+              <p class="text-[12px] text-gray-700">Click to upload</p>
+              <p class="text-[11px] text-gray-400">PNG, JPG, SVG</p>
+              <input type="file" accept="image/*" class="hidden"
+                @change=${(e: Event) => {
+                  const f = (e.target as HTMLInputElement).files?.[0]
+                  if (!f) return
+                  const reader = new FileReader()
+                  reader.onload = (ev) => opts.onChange(ev.target?.result as string)
+                  reader.readAsDataURL(f)
+                }} />
+            </label>
+            <input type="url"
+              @blur=${(e: Event) => {
+                const v = (e.target as HTMLInputElement).value.trim()
+                if (v) opts.onChange(v)
+              }}
+              placeholder="…or paste an image URL"
+              class="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[12px] outline-none focus:border-gray-400" />
+          </div>
+        `}
+      </div>
+    `
+  }
+
   private _renderVideo(v: any | null) {
     return html`
       <div class="flex-1 overflow-y-auto scrollbar-thin">
@@ -999,6 +1147,15 @@ class FFApp extends LitElement {
             ${v?.reference_link ? html`
               <p class="text-[11px] text-gray-400 mt-1">Saved · <span class="font-mono">${v.reference_link}</span></p>
             ` : ''}
+          </div>
+
+          <div class="mb-5">
+            ${this._renderImageUploader({
+              label: 'Thumbnail',
+              value: v?.thumbnail_image ?? '',
+              onChange: (val) => this._setSimpleField('thumbnail_image', val),
+              onRemove: () => this._setSimpleField('thumbnail_image', ''),
+            })}
           </div>
 
           <div class="flex flex-col gap-1.5">
@@ -1037,6 +1194,15 @@ class FFApp extends LitElement {
             <p class="text-[11px] text-gray-400 leading-snug">Paste the embed snippet for the correct calculator. The front-end renders this in place.</p>
           </div>
 
+          <div class="mb-5">
+            ${this._renderImageUploader({
+              label: 'Thumbnail',
+              value: c?.thumbnail_image ?? '',
+              onChange: (val) => this._setSimpleField('thumbnail_image', val),
+              onRemove: () => this._setSimpleField('thumbnail_image', ''),
+            })}
+          </div>
+
           <div class="flex flex-col gap-1.5">
             <label class="text-[10px] font-bold tracking-widest uppercase text-gray-500">Description <span class="font-normal normal-case tracking-normal text-gray-400">(optional)</span></label>
             <div
@@ -1052,8 +1218,9 @@ class FFApp extends LitElement {
   }
 
   private _renderInfographic(g: any | null) {
-    // Schema lacks a title field, so v2 stores it under _extras.title.
-    const title = (g?._extras?.title as string | undefined) ?? (g?.title as string | undefined) ?? ''
+    // Title isn't part of the strict schema — store it under _extras.title only
+    // (the schema's _extras passthrough is designed for exactly this).
+    const title = (g?._extras?.title as string | undefined) ?? ''
     return html`
       <div class="flex-1 overflow-y-auto scrollbar-thin">
         <div class="mx-auto max-w-[720px] px-12 py-10 ${this.isGenerating ? 'ff-stream-cursor' : ''}" data-rewrite="true">
@@ -1061,8 +1228,18 @@ class FFApp extends LitElement {
           ${this._renderTitleHeader({
             title,
             placeholder: 'Untitled infographic',
-            onCommit: (t) => this._updateJson<any>(c => ({ ...c, title: t, _extras: { ...(c._extras ?? {}), title: t } })),
+            onCommit: (t) => this._updateJson<any>(c => ({ ...c, _extras: { ...(c._extras ?? {}), title: t } })),
           })}
+
+          <div class="mb-5">
+            ${this._renderImageUploader({
+              label: 'Thumbnail (optional, for library cards)',
+              value: g?.thumbnail_image ?? '',
+              onChange: (val) => this._setSimpleField('thumbnail_image', val),
+              onRemove: () => this._setSimpleField('thumbnail_image', ''),
+              height: 'h-24',
+            })}
+          </div>
 
           <div class="flex flex-col gap-2">
             <label class="text-[10px] font-bold tracking-widest uppercase text-gray-500">Infographic image</label>
@@ -1079,7 +1256,7 @@ class FFApp extends LitElement {
                 <div class="w-16 h-12 mx-auto mb-3 rounded-md border border-dashed border-gray-300 flex items-center justify-center text-gray-300">
                   <svg width="22" height="22" viewBox="0 0 22 22" fill="none"><rect x="2" y="3" width="18" height="14" rx="1.5" stroke="currentColor" stroke-width="1.2"/><circle cx="7.5" cy="9" r="1.5" stroke="currentColor" stroke-width="1.2"/><path d="M3 16l5-5 4 4 3-3 4 4" stroke="currentColor" stroke-width="1.2"/></svg>
                 </div>
-                <p class="text-[13px] text-gray-700 mb-1">Click to upload, or drag and drop</p>
+                <p class="text-[13px] text-gray-700 mb-1">Click to upload</p>
                 <p class="text-[12px] text-gray-400">PNG, JPG, SVG</p>
                 <input type="file" accept="image/*" class="hidden"
                   @change=${(e: Event) => {
@@ -1126,11 +1303,20 @@ class FFApp extends LitElement {
           ` : ''}
           ${cards.map((c, i) => html`
             <article class="group rounded-2xl border border-gray-200 bg-white p-6 hover:border-[#063853]/40 transition-colors relative" data-rewrite="true">
-              <div class="flex items-center justify-between mb-3">
-                <span class="text-[10px] font-bold tracking-widest uppercase text-[#063853]">Card ${i + 1}${c.preheading ? ` · ${c.preheading}` : ''}</span>
+              <div class="flex items-center justify-between mb-3 gap-3">
+                <div class="flex items-center gap-2 min-w-0">
+                  <span class="text-[10px] font-bold tracking-widest uppercase text-[#063853] shrink-0">Card ${i + 1}</span>
+                  <span class="text-gray-300 text-[10px] shrink-0">·</span>
+                  <span
+                    data-placeholder="add preheading (optional)"
+                    class="text-[10px] font-bold tracking-widest uppercase text-gray-500 outline-none focus:bg-amber-50/40 rounded px-1 -mx-1 truncate min-w-[80px]"
+                    contenteditable=${this.isGenerating ? 'false' : 'true'}
+                    @blur=${(e: Event) => this._updateCardField(i, 'preheading', (e.target as HTMLElement).innerText.trim())}
+                  >${c.preheading ?? ''}</span>
+                </div>
                 ${this.isGenerating ? '' : html`
                   <button @click=${() => this._removeCard(i)}
-                    class="opacity-0 group-hover:opacity-100 text-gray-300 hover:text-red-500 text-[11px] transition-opacity">
+                    class="opacity-0 group-hover:opacity-100 text-gray-300 hover:text-red-500 text-[11px] transition-opacity shrink-0">
                     Remove
                   </button>
                 `}
@@ -1180,12 +1366,20 @@ class FFApp extends LitElement {
           >${cl?.intro_paragraph ?? ''}</p>
           ${(cl?.sections ?? []).map((sec, sIdx) => html`
             <section class="group mb-6" data-rewrite="true">
-              <h2
-                data-placeholder="Section title"
-                class="text-[16px] font-semibold text-[#1a1a1a] mb-1.5 outline-none focus:bg-amber-50/40 rounded px-1 -mx-1"
-                contenteditable=${this.isGenerating ? 'false' : 'true'}
-                @blur=${(e: Event) => this._updateChecklistSection(sIdx, 'title', (e.target as HTMLElement).innerText.trim())}
-              >${sec.title ?? ''}</h2>
+              <div class="flex items-start justify-between gap-2 mb-1.5">
+                <h2
+                  data-placeholder="Section title"
+                  class="flex-1 text-[16px] font-semibold text-[#1a1a1a] outline-none focus:bg-amber-50/40 rounded px-1 -mx-1"
+                  contenteditable=${this.isGenerating ? 'false' : 'true'}
+                  @blur=${(e: Event) => this._updateChecklistSection(sIdx, 'title', (e.target as HTMLElement).innerText.trim())}
+                >${sec.title ?? ''}</h2>
+                ${this.isGenerating ? '' : html`
+                  <button @click=${() => this._removeChecklistSection(sIdx)}
+                    class="opacity-0 group-hover:opacity-100 text-gray-300 hover:text-red-500 text-[11px] transition-opacity shrink-0">
+                    Remove section
+                  </button>
+                `}
+              </div>
               <p
                 data-placeholder="Short description (optional)"
                 class="text-[13px] text-gray-500 mb-3 outline-none focus:bg-amber-50/40 rounded px-1 -mx-1"
@@ -1217,11 +1411,31 @@ class FFApp extends LitElement {
                 </button>
               `}
               ${sec.tip ? html`
-                <div class="mt-3 rounded-lg bg-amber-50 border border-amber-100 px-4 py-3">
-                  ${sec.tip.title ? html`<p class="text-[12px] font-semibold text-amber-900 mb-1">${sec.tip.title}</p>` : ''}
-                  ${sec.tip.description ? html`<p class="text-[13px] text-amber-800 leading-relaxed">${sec.tip.description}</p>` : ''}
+                <div class="group/tip mt-3 rounded-lg bg-amber-50 border border-amber-100 px-4 py-3 relative">
+                  ${this.isGenerating ? '' : html`
+                    <button @click=${() => this._removeChecklistTip(sIdx)}
+                      class="absolute top-2 right-2 opacity-0 group-hover/tip:opacity-100 text-amber-400 hover:text-red-500 text-[11px] transition-opacity">Remove tip</button>
+                  `}
+                  <p
+                    data-placeholder="Tip title"
+                    class="text-[12px] font-semibold text-amber-900 mb-1 outline-none focus:bg-amber-100/60 rounded px-1 -mx-1"
+                    contenteditable=${this.isGenerating ? 'false' : 'true'}
+                    @blur=${(e: Event) => this._updateChecklistTip(sIdx, 'title', (e.target as HTMLElement).innerText.trim())}
+                  >${sec.tip.title ?? ''}</p>
+                  <p
+                    data-placeholder="Tip description"
+                    class="text-[13px] text-amber-800 leading-relaxed outline-none focus:bg-amber-100/60 rounded px-1 -mx-1"
+                    contenteditable=${this.isGenerating ? 'false' : 'true'}
+                    @blur=${(e: Event) => this._updateChecklistTip(sIdx, 'description', (e.target as HTMLElement).innerText.trim())}
+                  >${sec.tip.description ?? ''}</p>
                 </div>
-              ` : ''}
+              ` : (this.isGenerating ? '' : html`
+                <button @click=${() => this._addChecklistTip(sIdx)}
+                  class="mt-2 ml-3 text-[11px] text-amber-600 hover:text-amber-800 flex items-center gap-1">
+                  <svg width="10" height="10" viewBox="0 0 11 11" fill="none"><path d="M5.5 1v9M1 5.5h9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+                  Add tip
+                </button>
+              `)}
             </section>
           `)}
           ${this.isGenerating ? '' : html`
@@ -1332,7 +1546,7 @@ class FFApp extends LitElement {
   }
 
   private _renderUserStory(us: any | null) {
-    const u = us as { title?: string; subtitle?: string; copy?: string } | null
+    const u = us as { title?: string; subtitle?: string; copy?: string; thumbnail_image?: string } | null
     return html`
       <div class="flex-1 overflow-y-auto scrollbar-thin">
         <div class="mx-auto max-w-[720px] px-12 py-10 ${this.isGenerating ? 'ff-stream-cursor' : ''}" data-rewrite="true">
@@ -1350,11 +1564,21 @@ class FFApp extends LitElement {
             @blur=${(e: Event) => this._updateStoryField('subtitle', (e.target as HTMLElement).innerText.trim())}
           >${u?.subtitle ?? ''}</p>
 
+          <div class="mb-6">
+            ${this._renderImageUploader({
+              label: 'Thumbnail',
+              value: u?.thumbnail_image ?? '',
+              onChange: (v) => this._setSimpleField('thumbnail_image', v),
+              onRemove: () => this._setSimpleField('thumbnail_image', ''),
+            })}
+          </div>
+
           <div
-            class="ff-prose outline-none focus:bg-amber-50/40 rounded min-h-[120px] ${u?.copy ? '' : 'text-gray-300 italic'}"
+            data-placeholder="Tell the story…"
+            class="ff-prose outline-none focus:bg-amber-50/40 rounded min-h-[120px]"
             contenteditable=${this.isGenerating ? 'false' : 'true'}
             @blur=${(e: Event) => this._updateStoryField('copy', (e.target as HTMLElement).innerHTML)}
-          >${unsafeHTML(u?.copy || (this.isGenerating ? '' : '<p>Tell the story…</p>'))}</div>
+          >${unsafeHTML(u?.copy ?? '')}</div>
         </div>
       </div>
     `
@@ -1377,7 +1601,24 @@ class FFApp extends LitElement {
             contenteditable=${this.isGenerating ? 'false' : 'true'}
             @blur=${(e: Event) => this._updateJson<Quiz>(c => ({ ...c, intro_paragraph: (e.target as HTMLElement).innerText.trim() }))}
           >${q?.intro_paragraph ?? ''}</p>
-          <p class="text-[10px] font-bold tracking-widest uppercase text-gray-400 mb-3">Type · ${q?.quizType ?? '—'}</p>
+          <div class="flex items-center gap-3 mb-4 flex-wrap">
+            <label class="text-[10px] font-bold tracking-widest uppercase text-gray-500">Quiz type</label>
+            <div class="inline-flex items-center gap-0.5 p-0.5 rounded-full bg-gray-100">
+              ${(['tiered', 'knowledge', 'classification'] as const).map(t => html`
+                <button
+                  ?disabled=${this.isGenerating}
+                  @click=${() => this._setQuizType(t)}
+                  class="px-3 py-1 rounded-full text-[11px] font-semibold transition-colors ${q?.quizType === t ? 'bg-white text-[#1a1a1a] shadow-sm' : 'text-gray-500 hover:text-gray-700'} disabled:opacity-50">
+                  ${t.charAt(0).toUpperCase() + t.slice(1)}
+                </button>
+              `)}
+            </div>
+            <span class="text-[11px] text-gray-400">${
+              q?.quizType === 'knowledge' ? 'Right/wrong scoring.' :
+              q?.quizType === 'tiered' ? 'Score ranges → result tiers.' :
+              'Sort answers into result types.'
+            }</span>
+          </div>
           ${(q?.questions ?? []).map((qq, qIdx) => html`
             <article class="group mb-5 rounded-xl border border-gray-200 p-5" data-rewrite="true">
               <div class="flex items-center justify-between mb-2">
@@ -1395,7 +1636,7 @@ class FFApp extends LitElement {
               >${qq.questionText ?? ''}</p>
               <ul class="flex flex-col gap-1.5">
                 ${(qq.answers ?? []).map((a, aIdx) => html`
-                  <li class="flex items-center gap-2 text-[14px] text-gray-800">
+                  <li class="group/ans flex items-center gap-2 text-[14px] text-gray-800">
                     <span class="w-5 h-5 rounded-full border border-gray-300 text-[10px] font-semibold flex items-center justify-center shrink-0">${a.typeOption ?? ''}</span>
                     <span
                       data-placeholder=${'Answer ' + (a.typeOption ?? '')}
@@ -1403,6 +1644,11 @@ class FFApp extends LitElement {
                       contenteditable=${this.isGenerating ? 'false' : 'true'}
                       @blur=${(e: Event) => this._updateAnswer(qIdx, aIdx, (e.target as HTMLElement).innerText.trim())}
                     >${a.answerText ?? ''}</span>
+                    ${this.isGenerating || (qq.answers?.length ?? 0) <= 2 ? '' : html`
+                      <button @click=${() => this._removeAnswer(qIdx, aIdx)}
+                        title="Remove answer"
+                        class="opacity-0 group-hover/ans:opacity-100 text-gray-300 hover:text-red-500 text-[12px] transition-opacity shrink-0">×</button>
+                    `}
                   </li>
                 `)}
               </ul>
@@ -1413,20 +1659,84 @@ class FFApp extends LitElement {
                   Add answer
                 </button>
               `}
-              <p
-                class="mt-3 text-[12px] text-gray-500 italic outline-none focus:bg-amber-50/40 rounded px-1 -mx-1 ${qq.explanation ? '' : 'text-gray-300'}"
-                contenteditable=${this.isGenerating ? 'false' : 'true'}
-                @blur=${(e: Event) => this._updateQuestion(qIdx, 'explanation', (e.target as HTMLElement).innerText.trim())}
-              >${qq.explanation || (this.isGenerating ? '' : 'Explanation (optional)')}</p>
+              <div class="mt-3 grid grid-cols-1 gap-2">
+                <div>
+                  <label class="text-[10px] font-bold tracking-widest uppercase text-gray-400">Tip <span class="font-normal normal-case tracking-normal text-gray-300">(optional)</span></label>
+                  <p
+                    data-placeholder="Hint for the user before they pick…"
+                    class="text-[12px] text-gray-600 outline-none focus:bg-amber-50/40 rounded px-1 -mx-1 mt-1"
+                    contenteditable=${this.isGenerating ? 'false' : 'true'}
+                    @blur=${(e: Event) => this._updateQuestion(qIdx, 'tip', (e.target as HTMLElement).innerText.trim())}
+                  >${qq.tip ?? ''}</p>
+                </div>
+                <div>
+                  <label class="text-[10px] font-bold tracking-widest uppercase text-gray-400">Explanation <span class="font-normal normal-case tracking-normal text-gray-300">(optional)</span></label>
+                  <p
+                    data-placeholder="Shown after the user answers…"
+                    class="text-[12px] text-gray-500 italic outline-none focus:bg-amber-50/40 rounded px-1 -mx-1 mt-1"
+                    contenteditable=${this.isGenerating ? 'false' : 'true'}
+                    @blur=${(e: Event) => this._updateQuestion(qIdx, 'explanation', (e.target as HTMLElement).innerText.trim())}
+                  >${qq.explanation ?? ''}</p>
+                </div>
+              </div>
             </article>
           `)}
           ${this.isGenerating ? '' : html`
             <button @click=${() => this._addQuestion()}
-              class="flex items-center gap-1.5 text-[12px] font-semibold text-[#063853] hover:text-[#04293D] px-4 py-2 rounded-lg border border-dashed border-gray-300 hover:border-[#063853] hover:bg-gray-50 transition-colors">
+              class="flex items-center gap-1.5 text-[12px] font-semibold text-[#063853] hover:text-[#04293D] px-4 py-2 rounded-lg border border-dashed border-gray-300 hover:border-[#063853] hover:bg-gray-50 transition-colors mb-8">
               <svg width="11" height="11" viewBox="0 0 11 11" fill="none"><path d="M5.5 1v9M1 5.5h9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
               Add question
             </button>
           `}
+
+          <!-- Rubric / results -->
+          <div class="mt-8 pt-6 border-t border-gray-100">
+            <p class="text-[11px] font-bold tracking-widest uppercase text-gray-500 mb-1">Results</p>
+            <p class="text-[12px] text-gray-400 mb-4">${
+              q?.quizType === 'knowledge' ? 'Score-band feedback shown after the quiz.' :
+              q?.quizType === 'tiered' ? 'Define each tier the user can land in by score.' :
+              'Define each result "type" (matched to the answer letters).'
+            }</p>
+            ${(q?.rubric?.criteria ?? []).map((c, idx) => html`
+              <article class="group/rub mb-3 rounded-xl border border-gray-200 p-4" data-rewrite="true">
+                <div class="flex items-center justify-between mb-2">
+                  <span class="inline-flex items-center gap-2 text-[10px] font-bold tracking-widest uppercase text-[#063853]">
+                    <span class="w-5 h-5 rounded-full bg-[#063853] text-white flex items-center justify-center text-[10px]">${c.typeOption ?? ''}</span>
+                    Result ${idx + 1}
+                  </span>
+                  ${this.isGenerating || (q?.rubric?.criteria?.length ?? 0) <= 1 ? '' : html`
+                    <button @click=${() => this._removeRubricCriterion(idx)}
+                      class="opacity-0 group-hover/rub:opacity-100 text-gray-300 hover:text-red-500 text-[11px] transition-opacity">Remove</button>
+                  `}
+                </div>
+                <p
+                  data-placeholder="Result label (e.g. Saver, On track, Needs work…)"
+                  class="text-[14px] font-semibold text-[#1a1a1a] mb-2 outline-none focus:bg-amber-50/40 rounded px-1 -mx-1"
+                  contenteditable=${this.isGenerating ? 'false' : 'true'}
+                  @blur=${(e: Event) => this._updateRubric(idx, 'label', (e.target as HTMLElement).innerText.trim())}
+                >${c.label ?? ''}</p>
+                <p
+                  data-placeholder="Result description shown to the user…"
+                  class="text-[13px] text-gray-700 leading-relaxed mb-2 outline-none focus:bg-amber-50/40 rounded px-1 -mx-1"
+                  contenteditable=${this.isGenerating ? 'false' : 'true'}
+                  @blur=${(e: Event) => this._updateRubric(idx, 'resultText', (e.target as HTMLElement).innerText.trim())}
+                >${c.resultText ?? ''}</p>
+                <p
+                  data-placeholder="Suggested next move (optional)"
+                  class="text-[12px] text-gray-500 italic outline-none focus:bg-amber-50/40 rounded px-1 -mx-1"
+                  contenteditable=${this.isGenerating ? 'false' : 'true'}
+                  @blur=${(e: Event) => this._updateRubric(idx, 'nextMove', (e.target as HTMLElement).innerText.trim())}
+                >${c.nextMove ?? ''}</p>
+              </article>
+            `)}
+            ${this.isGenerating ? '' : html`
+              <button @click=${() => this._addRubricCriterion()}
+                class="flex items-center gap-1.5 text-[12px] font-semibold text-[#063853] hover:text-[#04293D] px-4 py-2 rounded-lg border border-dashed border-gray-300 hover:border-[#063853] hover:bg-gray-50 transition-colors">
+                <svg width="11" height="11" viewBox="0 0 11 11" fill="none"><path d="M5.5 1v9M1 5.5h9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+                Add result
+              </button>
+            `}
+          </div>
         </div>
       </div>
     `
@@ -1645,6 +1955,37 @@ class FFApp extends LitElement {
       }),
     }))
   }
+  private _removeAnswer(qIdx: number, aIdx: number) {
+    this._updateJson<Quiz>(q => ({
+      ...q,
+      questions: (q.questions ?? []).map((qq, i) => i !== qIdx ? qq : ({
+        ...qq, answers: (qq.answers ?? []).filter((_, j) => j !== aIdx),
+      })),
+    }))
+  }
+  private _setQuizType(t: 'tiered' | 'knowledge' | 'classification') {
+    this._updateJson<Quiz>(q => ({ ...q, quizType: t }))
+  }
+  private _updateRubric(idx: number, field: 'label' | 'resultText' | 'nextMove', value: string) {
+    this._updateJson<Quiz>(q => ({
+      ...q,
+      rubric: { criteria: (q.rubric?.criteria ?? []).map((c, i) => i === idx ? { ...c, [field]: value } : c) },
+    }))
+  }
+  private _addRubricCriterion() {
+    const LETTERS: Array<'A'|'B'|'C'|'D'|'E'|'F'|'G'|'H'|'I'|'J'> = ['A','B','C','D','E','F','G','H','I','J']
+    this._updateJson<Quiz>(q => {
+      const nextLetter = LETTERS[(q.rubric?.criteria ?? []).length] ?? 'A'
+      const next = { id: newId(), label: '', resultText: '', nextMove: '', start: null, end: null, typeOption: nextLetter, isMoreThanOne: null, image: '' }
+      return { ...q, rubric: { criteria: [...(q.rubric?.criteria ?? []), next] } }
+    })
+  }
+  private _removeRubricCriterion(idx: number) {
+    this._updateJson<Quiz>(q => ({
+      ...q,
+      rubric: { criteria: (q.rubric?.criteria ?? []).filter((_, i) => i !== idx) },
+    }))
+  }
 
   /** Checklist mutators */
   private _updateChecklistItem(sIdx: number, iIdx: number, label: string) {
@@ -1681,6 +2022,34 @@ class FFApp extends LitElement {
     this._updateJson<Checklist>(cl => ({
       ...cl,
       sections: [...(cl.sections ?? []), { id: newId(), title: 'New section', description: '', image: null, items: [{ id: newId(), label: '', subItems: null, isChecked: null }], tip: null }],
+    }))
+  }
+  private _removeChecklistSection(sIdx: number) {
+    this._updateJson<Checklist>(cl => ({
+      ...cl,
+      sections: (cl.sections ?? []).filter((_, i) => i !== sIdx),
+    }))
+  }
+  private _addChecklistTip(sIdx: number) {
+    this._updateJson<Checklist>(cl => ({
+      ...cl,
+      sections: (cl.sections ?? []).map((s, si) => si !== sIdx ? s : ({
+        ...s, tip: { image: null, title: 'Tip', description: '' },
+      })),
+    }))
+  }
+  private _removeChecklistTip(sIdx: number) {
+    this._updateJson<Checklist>(cl => ({
+      ...cl,
+      sections: (cl.sections ?? []).map((s, si) => si !== sIdx ? s : ({ ...s, tip: null })),
+    }))
+  }
+  private _updateChecklistTip(sIdx: number, field: 'title' | 'description', value: string) {
+    this._updateJson<Checklist>(cl => ({
+      ...cl,
+      sections: (cl.sections ?? []).map((s, si) => si !== sIdx ? s : ({
+        ...s, tip: { ...(s.tip ?? { image: null, title: '', description: '' }), [field]: value },
+      })),
     }))
   }
 
