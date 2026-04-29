@@ -434,5 +434,18 @@ export function getArticleCategories(): string[] {
   return [...new Set(loadArticles().flatMap(a => a.categories))].sort()
 }
 
+/** Real CMS category structure as parent → children groups, sorted alphabetically.
+ *  Used by the right-rail Categories panel so the editor matches the live taxonomy
+ *  rather than a hand-maintained subset. */
+export function getCategoryGroups(): Array<{ label: string; children: string[] }> {
+  const all = _cats
+  const parents = all.filter(c => !c.parentId)
+  const groups = parents.map(p => ({
+    label: p.title,
+    children: all.filter(c => c.parentId === p.id).map(c => c.title).sort((a, b) => a.localeCompare(b)),
+  }))
+  return groups.sort((a, b) => a.label.localeCompare(b.label))
+}
+
 /** Raw benefit code list for reference. */
 export const benefitCodes: string[] = benefitCodesRaw as string[]

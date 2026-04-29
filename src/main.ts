@@ -46,9 +46,28 @@ import {
   type ContentStatus,
 } from './lib/store'
 import type { ContentSource } from './lib/store'
-import { loadArticles } from './lib/articles'
-import { CATEGORIES, CURATED_CATEGORIES } from './lib/taxonomy'
+import { loadArticles, getCategoryGroups } from './lib/articles'
+import { CURATED_CATEGORIES } from './lib/taxonomy'
 import './components/ff-library'
+
+// ── Region / language normalization ───────────────────────────────────────
+// CMS data uses short codes ("us", "en"); the right-rail dropdown speaks full
+// names. Normalize on hydration so existing entries show selected values.
+const REGION_NORMALIZE: Record<string, string> = {
+  us: 'United States', 'united states': 'United States',
+  ca: 'Canada', canada: 'Canada',
+  uk: 'United Kingdom', gb: 'United Kingdom', 'united kingdom': 'United Kingdom',
+}
+const LANGUAGE_NORMALIZE: Record<string, string> = {
+  en: 'English', english: 'English',
+  es: 'Spanish', spanish: 'Spanish',
+}
+function normalizeRegion(v: string): string {
+  return REGION_NORMALIZE[v?.toLowerCase()?.trim()] ?? v ?? 'United States'
+}
+function normalizeLanguage(v: string): string {
+  return LANGUAGE_NORMALIZE[v?.toLowerCase()?.trim()] ?? v ?? 'English'
+}
 
 // ── Type list / labels — overrides for the v2 UI ────────────────────────────
 // Same keys as production TYPE_LABELS but presented in sentence case for the
@@ -197,8 +216,8 @@ class FFApp extends LitElement {
     this.expertSources = entry.expertSources?.length
       ? entry.expertSources
       : [{ insight: '', name: '', image: '' }]
-    this.region = entry.region ?? 'United States'
-    this.language = entry.language ?? 'English'
+    this.region = normalizeRegion(entry.region)
+    this.language = normalizeLanguage(entry.language)
     this.output = entry.output ?? ''
     this.editingId = entry.id
     this.isDirty = false
@@ -386,7 +405,16 @@ class FFApp extends LitElement {
     }
     if (this.editingId) {
       const u = updateEntry(this.editingId, payload)
-      if (u) { this.editingId = u.id; this._currentStatus = u.status }
+      if (u) {
+        this.editingId = u.id
+        this._currentStatus = u.status
+      } else {
+        // Editing a CMS article (cms_ id not in localStorage) → fork it to a new
+        // local draft so the writer's edits actually persist. Same UX, real save.
+        const c = createEntry(payload)
+        this.editingId = c.id
+        this._currentStatus = c.status
+      }
     } else {
       const c = createEntry(payload)
       this.editingId = c.id
@@ -448,6 +476,7 @@ class FFApp extends LitElement {
   // Disclosure toggles
   @state() private _showAdvanced = false
   @state() private _showSeoArticle = false            // Long-form copy textarea collapsed by default — it's huge
+  @state() private _categoryFilter = ''               // search filter for the Categories panel
 
   /** Hydrate the right-rail metadata from a loaded entry. */
   private _hydrateMeta(entry: ContentEntry) {
@@ -469,6 +498,10 @@ class FFApp extends LitElement {
     this._paidContent = entry.paidContent ?? false
     this._legacyId = entry.legacyId ?? ''
     this._excludeSmartBenefits = entry.excludeSmartBenefits ?? false
+    // Region / language come from the canonical (entry-level) fields. Normalize
+    // CMS short codes here too so the dropdown reflects reality.
+    this.region = normalizeRegion(entry.region)
+    this.language = normalizeLanguage(entry.language)
   }
 
   /** Reset all right-rail metadata back to defaults (called from `_newContent`). */
@@ -575,37 +608,80 @@ class FFApp extends LitElement {
         </div>
       </div>
 
-      <!-- Categories -->
-      <div class="border-t border-gray-100 pt-4 flex flex-col gap-2">
-        <p class="text-[10px] font-bold tracking-widest uppercase text-gray-400">Categories</p>
-        <p class="text-[11px] text-gray-500 leading-snug">Pick where this lives in the library.</p>
-        <div class="max-h-44 overflow-y-auto pr-1 flex flex-col gap-1.5 scrollbar-thin">
-          ${CATEGORIES.map(group => html`
-            <div class="flex flex-col gap-0.5">
-              <p class="text-[11px] font-semibold text-gray-700">${group.label}</p>
-              ${group.children.length ? group.children.map(child => {
-                const path = `${group.label}/${child}`
-                const checked = this._categories.includes(path)
-                return html`
-                  <label class="flex items-center gap-1.5 pl-2 text-[11.5px] text-gray-600 hover:text-gray-900 cursor-pointer">
-                    <input type="checkbox" .checked=${checked}
-                      @change=${() => this._toggleCategory(path)}
-                      class="h-3 w-3 rounded border-gray-300" />
-                    ${child}
-                  </label>
-                `
-              }) : html`
-                <label class="flex items-center gap-1.5 pl-2 text-[11.5px] text-gray-600 hover:text-gray-900 cursor-pointer">
-                  <input type="checkbox" .checked=${this._categories.includes(group.label)}
-                    @change=${() => this._toggleCategory(group.label)}
-                    class="h-3 w-3 rounded border-gray-300" />
-                  ${group.label}
-                </label>
-              `}
+      <!-- Categories — sourced from real CMS taxonomy so existing entries' categories show as checked. -->
+      ${(() => {
+        const groups = getCategoryGroups()
+        // Flatten every known label so we can detect "extras" the entry has but
+        // the canonical taxonomy doesn't list (e.g. retired or legacy categories).
+        const knownLabels = new Set<string>()
+        for (const g of groups) {
+          knownLabels.add(g.label)
+          for (const c of g.children) knownLabels.add(c)
+        }
+        const extras = (this._categories ?? []).filter(c => !knownLabels.has(c))
+        const filter = this._categoryFilter.toLowerCase().trim()
+        const filteredGroups = filter
+          ? groups.map(g => ({
+              label: g.label,
+              children: g.children.filter(c => c.toLowerCase().includes(filter) || g.label.toLowerCase().includes(filter)),
+            })).filter(g => g.children.length || g.label.toLowerCase().includes(filter))
+          : groups
+        return html`
+          <div class="border-t border-gray-100 pt-4 flex flex-col gap-2">
+            <div class="flex items-center justify-between">
+              <p class="text-[10px] font-bold tracking-widest uppercase text-gray-400">Categories <span class="text-[#063853] normal-case tracking-normal font-semibold ml-1">${this._categories.length || ''}</span></p>
             </div>
-          `)}
-        </div>
-      </div>
+            ${this._categories.length ? html`
+              <div class="flex flex-wrap gap-1">
+                ${this._categories.map(c => html`
+                  <button @click=${() => this._toggleCategory(c)}
+                    class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-[#063853]/10 text-[#063853] text-[11px] font-semibold hover:bg-[#063853]/20 transition-colors">
+                    ${c} <span class="text-[12px] leading-none">×</span>
+                  </button>
+                `)}
+              </div>
+            ` : ''}
+            <input type="text" .value=${this._categoryFilter}
+              @input=${(e: Event) => { this._categoryFilter = (e.target as HTMLInputElement).value }}
+              placeholder="Search categories…"
+              class="w-full rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-[12px] outline-none focus:border-gray-400" />
+            <div class="max-h-44 overflow-y-auto pr-1 flex flex-col gap-1.5 scrollbar-thin">
+              ${filteredGroups.length === 0 ? html`<p class="text-[11px] text-gray-400 italic px-1 py-2">No matches</p>` : ''}
+              ${filteredGroups.map(group => html`
+                <div class="flex flex-col gap-0.5">
+                  <label class="flex items-center gap-1.5 text-[11px] font-semibold text-gray-700 cursor-pointer">
+                    <input type="checkbox" .checked=${this._categories.includes(group.label)}
+                      @change=${() => this._toggleCategory(group.label)}
+                      class="h-3 w-3 rounded border-gray-300" />
+                    ${group.label}
+                  </label>
+                  ${group.children.map(child => html`
+                    <label class="flex items-center gap-1.5 pl-4 text-[11.5px] text-gray-600 hover:text-gray-900 cursor-pointer">
+                      <input type="checkbox" .checked=${this._categories.includes(child)}
+                        @change=${() => this._toggleCategory(child)}
+                        class="h-3 w-3 rounded border-gray-300" />
+                      ${child}
+                    </label>
+                  `)}
+                </div>
+              `)}
+            </div>
+            ${extras.length ? html`
+              <div class="pt-2 border-t border-dashed border-gray-200">
+                <p class="text-[10px] text-gray-400 uppercase tracking-wide font-semibold mb-1">Other tags on this entry</p>
+                <div class="flex flex-wrap gap-1">
+                  ${extras.map(c => html`
+                    <button @click=${() => this._toggleCategory(c)}
+                      class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-gray-100 text-gray-600 text-[11px] hover:bg-gray-200 transition-colors">
+                      ${c} <span class="text-[12px] leading-none">×</span>
+                    </button>
+                  `)}
+                </div>
+              </div>
+            ` : ''}
+          </div>
+        `
+      })()}
 
       <!-- AI source material — long-form copy -->
       <div class="border-t border-gray-100 pt-4 flex flex-col gap-2">
