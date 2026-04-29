@@ -1160,6 +1160,20 @@ class FFApp extends LitElement {
                     </button>
                   `}
                 <p class="text-[11px] text-center text-gray-400">⌘ + Enter</p>
+
+                <!-- Quick refine — only shown once there's a draft. AI tweaks the whole piece. -->
+                ${this.output ? html`
+                  <div class="mt-3 pt-3 border-t border-gray-100 flex flex-col gap-1">
+                    <p class="text-[10px] font-bold tracking-widest uppercase text-gray-500 mb-1">Refine the draft</p>
+                    ${['Make warmer', 'Shorten', 'More professional', 'Simpler language'].map(label => html`
+                      <button @click=${() => this._refine(label.toLowerCase())}
+                        ?disabled=${this.isGenerating}
+                        class="text-left text-[12px] text-gray-600 hover:text-[#063853] py-1 disabled:opacity-40 disabled:cursor-not-allowed">
+                        ${label}
+                      </button>
+                    `)}
+                  </div>
+                ` : ''}
               </div>
             ` : html`
               <!-- Manual mode: minimal sidebar — just region, mode flip, type. Save/Publish lives in the right rail. -->
@@ -1223,39 +1237,6 @@ class FFApp extends LitElement {
 
             ${this.output ? this._renderMetadataPanel() : ''}
 
-            ${this.contentType === 'article' && this.output ? html`
-              <div class="border-t border-gray-100 pt-4 flex flex-col gap-2">
-                <p class="text-[10px] font-bold tracking-widest uppercase text-gray-400 mb-1">Insert</p>
-                <div class="grid grid-cols-2 gap-1.5">
-                  ${[
-                    { type: 'h2',      label: 'Heading' },
-                    { type: 'h3',      label: 'Subheading' },
-                    { type: 'list',    label: 'Bulleted list' },
-                    { type: 'olist',   label: 'Numbered list' },
-                    { type: 'quote',   label: 'Quote' },
-                    { type: 'table',   label: 'Table' },
-                    { type: 'divider', label: 'Divider' },
-                  ].map(b => html`
-                    <button @click=${() => this._insertBlock(b.type as any)}
-                      class="text-[11px] text-left px-2 py-1.5 rounded-md border border-gray-200 hover:border-[#063853] hover:bg-white text-gray-600 hover:text-[#063853] transition-colors">
-                      + ${b.label}
-                    </button>
-                  `)}
-                </div>
-                <p class="text-[10px] text-gray-400 mt-1 leading-snug">Inserted at end. Drag or move with your cursor inside the article.</p>
-              </div>
-            ` : ''}
-
-            <div class="border-t border-gray-100 pt-4 flex flex-col gap-2">
-              <p class="text-[10px] font-bold tracking-widest uppercase text-gray-400 mb-1">Quick refine</p>
-              ${['Make warmer', 'Shorten', 'More professional', 'Simpler language'].map(label => html`
-                <button @click=${() => this._refine(label.toLowerCase())}
-                  ?disabled=${!this.output.trim() || this.isGenerating}
-                  class="text-left text-[12px] text-gray-600 hover:text-[#063853] py-1 disabled:opacity-40 disabled:cursor-not-allowed">
-                  ${label}
-                </button>
-              `)}
-            </div>
           </div>
         </aside>
       </div>
@@ -2479,21 +2460,6 @@ class FFApp extends LitElement {
   }
 
   /** Article block insert — append markdown block to end of current output. */
-  private _insertBlock(type: 'h2' | 'h3' | 'list' | 'olist' | 'quote' | 'table' | 'divider') {
-    const tpl: Record<string, string> = {
-      h2:      '\n\n## New section\n\n',
-      h3:      '\n\n### New subsection\n\n',
-      list:    '\n\n- New item\n- Another item\n\n',
-      olist:   '\n\n1. New item\n2. Another item\n\n',
-      quote:   '\n\n> A quote here\n\n',
-      table:   '\n\n| Column 1 | Column 2 |\n| --- | --- |\n| Cell | Cell |\n| Cell | Cell |\n\n',
-      divider: '\n\n---\n\n',
-    }
-    this._pushUndo()
-    this.output = (this.output || '') + tpl[type]
-    this.isDirty = true
-  }
-
   // ── Selection AI toolbar ───────────────────────────────────────────────────
 
   @state() private _selRect: DOMRect | null = null
