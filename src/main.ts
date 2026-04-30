@@ -14,6 +14,7 @@ import {
   buildRefinementMessage,
   buildJsonRefinementMessage,
   buildSourcesMessage,
+  buildSeoArticleMessage,
   streamMessage,
   AUDIENCE_LABELS,
   type GenerateRequest,
@@ -395,9 +396,10 @@ class FFApp extends LitElement {
         controller.signal,
         useJson ? 8192 : 2048,
       )
-      // Fire-and-forget sources extraction — runs after main draft, never blocks
-      // the generate UX. Skipped if user has already curated sources.
+      // Fire-and-forget enrichments — run after main draft, never block UX.
+      // Skipped if the writer has already curated each field.
       void this._autoExtractSources(req)
+      void this._autoExpandSeoArticle(req)
     } catch (err) {
       if (!(err instanceof Error && err.name === 'AbortError')) {
         this.error = err instanceof Error ? err.message : 'Something went wrong.'
@@ -407,11 +409,7 @@ class FFApp extends LitElement {
     }
   }
 
-  /**
-   * After the main draft streams in, ask the model for a JSON list of sources
-   * grounded in the draft. Replaces `_sources` only if the writer hasn't filled
-   * any rows in by hand. Silently no-ops on failure — sources are nice-to-have.
-   */
+  // Sources / long-form are skipped when the writer has already curated them.
   private async _autoExtractSources(ctx: GenerateRequest) {
     if (!this.apiKey || !this.output.trim()) return
     const hasUserSources = this._sources.some(s => s.title.trim() || s.url.trim() || s.note.trim())
@@ -444,6 +442,34 @@ class FFApp extends LitElement {
       // Sources are optional — don't surface errors here.
     } finally {
       this._sourcesLoading = false
+    }
+  }
+
+  private async _autoExpandSeoArticle(ctx: GenerateRequest) {
+    if (!this.apiKey || !this.output.trim()) return
+    if (this._seoArticle.trim()) return
+    this._seoLoading = true
+    try {
+      const draft = this.contentType === 'article' ? stripPublishingSections(this.output) : this.output
+      const msg = buildSeoArticleMessage(ctx, draft)
+      let raw = ''
+      const controller = new AbortController()
+      await streamMessage(
+        this.apiKey,
+        [{ role: 'user', content: msg }],
+        'You write polished long-form Financial Finesse SEO articles. Return only the article markdown — no preface, no commentary.',
+        (chunk) => { raw += chunk },
+        controller.signal,
+        4096,
+      )
+      const trimmed = raw.trim()
+      if (!trimmed) return
+      this._seoArticle = trimmed
+      this.isDirty = true
+    } catch {
+      // Long-form expansion is optional.
+    } finally {
+      this._seoLoading = false
     }
   }
 
@@ -564,6 +590,7 @@ class FFApp extends LitElement {
   @state() private _seoArticle = ''                   // long-form copy fed to the AI as source material
   @state() private _sources: ContentSource[] = []     // citations / references for this piece
   @state() private _sourcesLoading = false             // background sources extraction in flight
+  @state() private _seoLoading = false                 // background long-form expansion in flight
 
   // Advanced fields — collapsed behind a disclosure by default.
   @state() private _author = ''
@@ -1238,12 +1265,18 @@ class FFApp extends LitElement {
                 class="text-[10.5px] text-[#063853] font-semibold hover:underline">Copy</button>
             ` : ''}
           </div>
-          <p class="text-[11px] text-gray-500 leading-snug">Paste a long-form article, brief, or research notes here. When set, the AI uses it as the primary factual basis for generation and refinement.</p>
-          <textarea .value=${this._seoArticle}
-            @input=${(e: Event) => { this._seoArticle = (e.target as HTMLTextAreaElement).value; this.isDirty = true }}
-            rows="8"
-            placeholder="Paste source material the AI should draw from."
-            class="w-full rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-[11.5px] leading-relaxed outline-none focus:border-gray-400 resize-y font-mono"></textarea>
+          <p class="text-[11px] text-gray-500 leading-snug">Auto-expanded from the draft after AI generation. Paste your own to override — when set, the AI uses it as the primary factual basis on the next generate / refine.</p>
+          ${this._seoLoading && !this._seoArticle ? html`
+            <div class="rounded-md border border-dashed border-gray-200 px-3 py-3 text-center">
+              <p class="text-[11px] text-gray-400">Expanding draft into long-form…</p>
+            </div>
+          ` : html`
+            <textarea .value=${this._seoArticle}
+              @input=${(e: Event) => { this._seoArticle = (e.target as HTMLTextAreaElement).value; this.isDirty = true }}
+              rows="8"
+              placeholder="Paste source material the AI should draw from."
+              class="w-full rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-[11.5px] leading-relaxed outline-none focus:border-gray-400 resize-y font-mono"></textarea>
+          `}
           ${this._seoArticle ? html`<p class="text-[10.5px] text-gray-400 text-right">${this._seoArticle.length.toLocaleString()} characters</p>` : ''}
         </div>
 
