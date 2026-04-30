@@ -41,6 +41,8 @@ export interface GenerateRequest {
   expertSources?: ExpertSource[]
   /** Long-form source material the AI should draw from (pasted by the writer). */
   seoArticle?: string
+  /** Pre-selected quiz format (only meaningful when contentType === 'quiz'). */
+  quizType?: 'classification' | 'tiered' | 'knowledge'
 }
 
 // Long-form source can be huge; cap before stuffing into a prompt so we don't
@@ -280,6 +282,13 @@ export function buildJsonUserMessage(req: GenerateRequest): string {
   }
 
   if (req.notes.trim()) parts.push(``, `Additional notes:`, req.notes.trim())
+
+  if (req.contentType === 'quiz' && req.quizType) {
+    const desc = req.quizType === 'classification' ? 'personality / sorting buckets — each answer maps to a `typeOption` letter; results are buckets, not scores'
+      : req.quizType === 'tiered' ? 'scored quiz where total points fall into result tiers — set a numeric `pointValue` on each answer and `start`/`end` ranges on each rubric criterion'
+      : 'right/wrong knowledge check — set `isCorrect: true` on the correct answer for each question and use rubric criteria as score-band feedback'
+    parts.push(``, `Quiz type: ${req.quizType} (${desc}). Set the JSON \`quizType\` field to "${req.quizType}".`)
+  }
 
   const seo = clipSeoArticle(req.seoArticle)
   if (seo) {

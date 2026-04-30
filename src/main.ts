@@ -44,6 +44,7 @@ import {
   hideEntry,
   getCurrentUser,
   getHiddenIds,
+  deriveSlug,
   type ContentEntry,
   type ContentStatus,
 } from './lib/store'
@@ -336,6 +337,33 @@ class FFApp extends LitElement {
     return this.isDirty && !!this.output.trim()
   }
 
+  /** Reset everything: topic, notes, draft, metadata, content type. Confirms first. */
+  private _resetEverything() {
+    if (this.isGenerating) return
+    const ok = window.confirm('Reset everything? This will clear the topic, notes, draft, and all metadata. This cannot be undone.')
+    if (!ok) return
+    this._abort?.abort()
+    this.tab = 'new'
+    this.mode = 'gate'
+    this.editingId = null
+    this.output = ''
+    this.topic = ''
+    this.notes = ''
+    this.contentType = 'article'
+    this.audience = 'all'
+    this.expertSources = [{ insight: '', name: '', image: '' }]
+    this.region = 'United States'
+    this.language = 'English'
+    this.error = ''
+    this.lastRequest = null
+    this.isDirty = false
+    this._currentStatus = 'draft'
+    this._quizTypeChoice = 'classification'
+    this._resetMeta()
+    this._undoStack = []
+    this._redoStack = []
+  }
+
   private _enterEditor(creationMode: 'ai' | 'manual') {
     this.mode = 'editor'
     this.creationMode = creationMode
@@ -372,6 +400,7 @@ class FFApp extends LitElement {
       notes: this.notes,
       expertSources: this.expertSources,
       seoArticle: this._seoArticle,
+      ...(this.contentType === 'quiz' ? { quizType: this._quizTypeChoice } : {}),
     }
     this.lastRequest = req
 
@@ -397,10 +426,11 @@ class FFApp extends LitElement {
         useJson ? 8192 : 2048,
       )
       // Fire-and-forget enrichments — run after main draft, never block UX.
-      // Sources / long-form skip when curated. Excerpt always refreshes on regenerate.
+      // Sources / long-form skip when curated. Excerpt + meta description refresh every regenerate.
       void this._autoExtractSources(req)
       void this._autoExpandSeoArticle(req)
       void this._autoExtractExcerpt(req)
+      void this._autoExtractMetaDescription(req)
     } catch (err) {
       if (!(err instanceof Error && err.name === 'AbortError')) {
         this.error = err instanceof Error ? err.message : 'Something went wrong.'
@@ -513,6 +543,48 @@ class FFApp extends LitElement {
       // Excerpt is optional.
     } finally {
       this._excerptLoading = false
+    }
+  }
+
+  private async _autoExtractMetaDescription(ctx: GenerateRequest) {
+    if (!this.apiKey || !this.output.trim()) return
+    this._metaDescriptionLoading = true
+    try {
+      const draft = this.contentType === 'article' ? stripPublishingSections(this.output) : this.output
+      const msg = [
+        `Write a search-engine meta description for this Financial Finesse content.`,
+        ``,
+        `Topic: ${ctx.topic}`,
+        ``,
+        `Draft:`,
+        draft,
+        ``,
+        `Rules:`,
+        `- 140–160 characters, single line, plain text`,
+        `- Lead with the reader benefit; include a primary keyword if natural`,
+        `- No quotes, no markdown, no trailing ellipsis`,
+        `- Match Financial Finesse voice: clear, human, jargon-free`,
+        ``,
+        `Return only the description.`,
+      ].join('\n')
+      let raw = ''
+      const controller = new AbortController()
+      await streamMessage(
+        this.apiKey,
+        [{ role: 'user', content: msg }],
+        'You return only the requested description. No preface, no quotes, no commentary.',
+        (chunk) => { raw += chunk },
+        controller.signal,
+        256,
+      )
+      const cleaned = raw.trim().replace(/^["'“”]|["'“”]$/g, '').replace(/\s+/g, ' ').trim()
+      if (!cleaned) return
+      this._metaDescription = cleaned.slice(0, 160)
+      this.isDirty = true
+    } catch {
+      // Meta description is optional.
+    } finally {
+      this._metaDescriptionLoading = false
     }
   }
 
@@ -635,6 +707,9 @@ class FFApp extends LitElement {
   @state() private _sourcesLoading = false             // background sources extraction in flight
   @state() private _seoLoading = false                 // background long-form expansion in flight
   @state() private _excerptLoading = false              // background one-sentence summary in flight
+  @state() private _metaDescriptionLoading = false      // background meta description in flight
+  // Slug stays in lockstep with the title until the writer manually edits it.
+  @state() private _slugAutoFromTitle = true
 
   // Advanced fields — collapsed behind a disclosure by default.
   @state() private _author = ''
@@ -653,6 +728,10 @@ class FFApp extends LitElement {
 
   // Disclosure toggles
   @state() private _categoryFilter = ''               // search filter for the Categories panel
+
+  // Pre-generation knob: when contentType === 'quiz', the writer picks the quiz
+  // format up-front so the AI generates the right shape from the start.
+  @state() private _quizTypeChoice: 'classification' | 'tiered' | 'knowledge' = 'classification'
 
   // Right-rail tab navigation. AI Context and Advanced never show "missing" badges.
   @state() private _rightTab: 'basics' | 'categories' | 'seo' | 'ai' | 'advanced' = 'basics'
@@ -691,11 +770,14 @@ class FFApp extends LitElement {
     // Reset tab + highlight on each load.
     this._rightTab = 'basics'
     this._highlightedField = ''
+    // Treat slug as auto if the saved slug still matches the topic-derived form.
+    this._slugAutoFromTitle = !this._slug || this._slug === deriveSlug(entry.topic ?? '')
   }
 
   /** Reset all right-rail metadata back to defaults (called from `_newContent`). */
   private _resetMeta() {
     this._slug = ''
+    this._slugAutoFromTitle = true
     this._excerpt = ''
     this._metaDescription = ''
     this._featuredImage = ''
@@ -788,6 +870,7 @@ class FFApp extends LitElement {
         }
       } catch { /* unparseable — leave alone */ }
     }
+    if (this._slugAutoFromTitle) this._slug = deriveSlug(v)
     this.isDirty = true
   }
 
@@ -1241,9 +1324,16 @@ class FFApp extends LitElement {
     return html`
       <div class="flex flex-col gap-4">
         <div class="flex flex-col gap-1" data-field="slug">
-          <label class="text-[11px] font-semibold text-gray-700">URL slug <span class="text-red-500">*</span></label>
+          <div class="flex items-center justify-between gap-2">
+            <label class="text-[11px] font-semibold text-gray-700">URL slug <span class="text-red-500">*</span></label>
+            ${!this._slugAutoFromTitle ? html`
+              <button type="button"
+                @click=${() => { this._slugAutoFromTitle = true; this._slug = deriveSlug(this._getTitle()); this.isDirty = true }}
+                class="text-[10.5px] text-[#063853] font-semibold hover:underline">Sync to title</button>
+            ` : ''}
+          </div>
           <input type="text" .value=${this._slug}
-            @input=${(e: Event) => { this._slug = (e.target as HTMLInputElement).value; this.isDirty = true }}
+            @input=${(e: Event) => { this._slug = (e.target as HTMLInputElement).value; this._slugAutoFromTitle = false; this.isDirty = true }}
             placeholder="auto-from-title"
             class="w-full rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-[12px] outline-none focus:border-gray-400 ${fld('slug')}" />
           ${this._slug ? html`<p class="text-[10.5px] text-gray-400 truncate">/library/${this._slug}</p>` : ''}
@@ -1251,11 +1341,17 @@ class FFApp extends LitElement {
 
         <div class="flex flex-col gap-1" data-field="metaDescription">
           <label class="text-[11px] font-semibold text-gray-700">Meta description <span class="text-red-500">*</span></label>
-          <textarea .value=${this._metaDescription}
-            @input=${(e: Event) => { this._metaDescription = (e.target as HTMLTextAreaElement).value; this.isDirty = true }}
-            rows="3"
-            placeholder="What search engines and link previews show. Aim for ~155 characters."
-            class="w-full rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-[12px] outline-none focus:border-gray-400 resize-none ${fld('metaDescription')}"></textarea>
+          ${this._metaDescriptionLoading && !this._metaDescription ? html`
+            <div class="rounded-md border border-dashed border-gray-200 px-3 py-3 text-center">
+              <p class="text-[11px] text-gray-400">Writing meta description…</p>
+            </div>
+          ` : html`
+            <textarea .value=${this._metaDescription}
+              @input=${(e: Event) => { this._metaDescription = (e.target as HTMLTextAreaElement).value; this.isDirty = true }}
+              rows="3"
+              placeholder="What search engines and link previews show. Aim for ~155 characters."
+              class="w-full rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-[12px] outline-none focus:border-gray-400 resize-none ${fld('metaDescription')}"></textarea>
+          `}
           <p class="text-[10.5px] text-gray-400">${this._metaDescription.length} / 160 characters</p>
         </div>
 
@@ -1721,6 +1817,30 @@ class FFApp extends LitElement {
               <p class="text-[11px] text-gray-400 leading-snug">${V2_TYPE_DESC[this.contentType]}</p>
             </div>
 
+            ${this.contentType === 'quiz' ? html`
+              <div class="flex flex-col gap-1.5">
+                <label class="text-[10px] font-bold tracking-widest uppercase text-[#383838]">Quiz format</label>
+                <div class="relative">
+                  <select .value=${this._quizTypeChoice}
+                    @change=${(e: Event) => { this._quizTypeChoice = (e.target as HTMLSelectElement).value as 'classification' | 'tiered' | 'knowledge' }}
+                    ?disabled=${this.isGenerating}
+                    class="w-full appearance-none rounded-lg border border-gray-200 bg-white px-3.5 py-2.5 text-[14px] outline-none focus:border-gray-400 pr-9 cursor-pointer disabled:opacity-50">
+                    <option value="classification">Classification — personality / sorting</option>
+                    <option value="tiered">Tiered — scored result ranges</option>
+                    <option value="knowledge">Knowledge — right vs. wrong</option>
+                  </select>
+                  <div class="pointer-events-none absolute inset-y-0 right-3 flex items-center">
+                    <svg class="h-4 w-4 text-gray-400" viewBox="0 0 16 16" fill="none"><path d="M4 6l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                  </div>
+                </div>
+                <p class="text-[11px] text-gray-400 leading-snug">${
+                  this._quizTypeChoice === 'classification' ? 'Each answer maps to a result type. Best for "what kind of saver are you" quizzes.' :
+                  this._quizTypeChoice === 'tiered' ? 'Sum points across answers, then land in a tier. Best for readiness scores.' :
+                  'Right or wrong per question. Best for fact checks.'
+                }</p>
+              </div>
+            ` : ''}
+
             ${this.creationMode === 'ai' ? html`
               <!-- Audience -->
               <div class="flex flex-col gap-1.5">
@@ -1785,6 +1905,15 @@ class FFApp extends LitElement {
                     </button>
                   `}
                 <p class="text-[11px] text-center text-gray-400">⌘ + Enter</p>
+
+                <!-- Reset everything — clears topic, notes, draft, metadata. Confirms first. -->
+                ${this.topic.trim() || this.output.trim() || this.notes.trim() ? html`
+                  <button @click=${() => this._resetEverything()}
+                    ?disabled=${this.isGenerating}
+                    class="text-[11px] text-gray-400 hover:text-red-600 underline-offset-2 hover:underline transition-colors py-1 disabled:opacity-40 disabled:cursor-not-allowed">
+                    Reset everything
+                  </button>
+                ` : ''}
 
                 <!-- Quick refine — only shown once there's a draft. AI tweaks the whole piece. -->
                 ${this.output ? html`
@@ -2634,9 +2763,9 @@ class FFApp extends LitElement {
                 contenteditable=${this.isGenerating ? 'false' : 'true'}
                 @blur=${(e: Event) => this._updateQuestion(qIdx, 'questionText', (e.target as HTMLElement).innerText.trim())}
               >${qq.questionText ?? ''}</p>
-              <ul class="flex flex-col gap-1.5">
+              <div class="flex flex-col gap-1.5">
                 ${(qq.answers ?? []).map((a, aIdx) => html`
-                  <li class="group/ans flex items-center gap-2 text-[14px] text-gray-800">
+                  <div class="group/ans flex items-center gap-2 text-[14px] text-gray-800">
                     <span class="w-5 h-5 rounded-full border border-gray-300 text-[10px] font-semibold flex items-center justify-center shrink-0">${a.typeOption ?? ''}</span>
                     <span
                       data-placeholder=${'Answer ' + (a.typeOption ?? '')}
@@ -2649,9 +2778,9 @@ class FFApp extends LitElement {
                         title="Remove answer"
                         class="opacity-0 group-hover/ans:opacity-100 text-gray-300 hover:text-red-500 text-[12px] transition-opacity shrink-0">×</button>
                     `}
-                  </li>
+                  </div>
                 `)}
-              </ul>
+              </div>
               ${this.isGenerating ? '' : html`
                 <button @click=${() => this._addAnswer(qIdx)}
                   class="mt-2 text-[11px] text-[#063853] hover:text-[#04293D] flex items-center gap-1">
