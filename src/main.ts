@@ -397,9 +397,10 @@ class FFApp extends LitElement {
         useJson ? 8192 : 2048,
       )
       // Fire-and-forget enrichments — run after main draft, never block UX.
-      // Skipped if the writer has already curated each field.
+      // Sources / long-form skip when curated. Excerpt always refreshes on regenerate.
       void this._autoExtractSources(req)
       void this._autoExpandSeoArticle(req)
+      void this._autoExtractExcerpt(req)
     } catch (err) {
       if (!(err instanceof Error && err.name === 'AbortError')) {
         this.error = err instanceof Error ? err.message : 'Something went wrong.'
@@ -470,6 +471,48 @@ class FFApp extends LitElement {
       // Long-form expansion is optional.
     } finally {
       this._seoLoading = false
+    }
+  }
+
+  private async _autoExtractExcerpt(ctx: GenerateRequest) {
+    if (!this.apiKey || !this.output.trim()) return
+    this._excerptLoading = true
+    try {
+      const draft = this.contentType === 'article' ? stripPublishingSections(this.output) : this.output
+      const msg = [
+        `Write ONE library-card summary sentence for this Financial Finesse content.`,
+        ``,
+        `Topic: ${ctx.topic}`,
+        ``,
+        `Draft:`,
+        draft,
+        ``,
+        `Rules:`,
+        `- Exactly one sentence, max 160 characters`,
+        `- Plain text, no quotes, no markdown, no trailing period unless natural`,
+        `- Capture the value to the reader, not a topic label`,
+        `- Match Financial Finesse voice: clear, human, jargon-free`,
+        ``,
+        `Return only the sentence.`,
+      ].join('\n')
+      let raw = ''
+      const controller = new AbortController()
+      await streamMessage(
+        this.apiKey,
+        [{ role: 'user', content: msg }],
+        'You return only the requested sentence. No preface, no quotes, no commentary.',
+        (chunk) => { raw += chunk },
+        controller.signal,
+        256,
+      )
+      const cleaned = raw.trim().replace(/^["'“”]|["'“”]$/g, '').replace(/\s+/g, ' ').trim()
+      if (!cleaned) return
+      this._excerpt = cleaned.slice(0, 240)
+      this.isDirty = true
+    } catch {
+      // Excerpt is optional.
+    } finally {
+      this._excerptLoading = false
     }
   }
 
@@ -591,6 +634,7 @@ class FFApp extends LitElement {
   @state() private _sources: ContentSource[] = []     // citations / references for this piece
   @state() private _sourcesLoading = false             // background sources extraction in flight
   @state() private _seoLoading = false                 // background long-form expansion in flight
+  @state() private _excerptLoading = false              // background one-sentence summary in flight
 
   // Advanced fields — collapsed behind a disclosure by default.
   @state() private _author = ''
@@ -1007,11 +1051,17 @@ class FFApp extends LitElement {
 
         <div class="flex flex-col gap-1" data-field="excerpt">
           <label class="text-[11px] font-semibold text-gray-700">One-sentence summary <span class="text-red-500">*</span></label>
-          <textarea .value=${this._excerpt}
-            @input=${(e: Event) => { this._excerpt = (e.target as HTMLTextAreaElement).value; this.isDirty = true }}
-            rows="3"
-            placeholder="Shown in the library card."
-            class="w-full rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-[12px] outline-none focus:border-gray-400 resize-none ${fld('excerpt')}"></textarea>
+          ${this._excerptLoading && !this._excerpt ? html`
+            <div class="rounded-md border border-dashed border-gray-200 px-3 py-3 text-center">
+              <p class="text-[11px] text-gray-400">Writing summary from draft…</p>
+            </div>
+          ` : html`
+            <textarea .value=${this._excerpt}
+              @input=${(e: Event) => { this._excerpt = (e.target as HTMLTextAreaElement).value; this.isDirty = true }}
+              rows="3"
+              placeholder="Shown in the library card."
+              class="w-full rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-[12px] outline-none focus:border-gray-400 resize-none ${fld('excerpt')}"></textarea>
+          `}
         </div>
 
         <div class="flex flex-col gap-1">
