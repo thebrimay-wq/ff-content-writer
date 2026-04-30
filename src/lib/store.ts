@@ -46,6 +46,10 @@ export interface ContentEntry {
   excludeSmartBenefits: boolean
   categories: string[]          // hierarchical paths: "Debt/Borrowing Money"
   curatedCategories: string[]
+  tags: string[]                // public-facing tags
+  internalTags: string[]        // editorial / ops tags not shown to readers
+  metaDescription: string       // <meta name="description"> — separate from `excerpt` (library card copy)
+  featuredImage: string         // hero image URL
   seoArticle: string            // long-form Context article, independent of `output`
   seoSourceOutput: string       // snapshot of `output` when `seoArticle` was last generated — drives "stale" detection
   sources: ContentSource[]      // references/citations for this piece
@@ -139,6 +143,10 @@ function migrate(raw: Record<string, unknown>): ContentEntry {
     excludeSmartBenefits: (raw.excludeSmartBenefits as boolean) ?? false,
     categories: (raw.categories as string[]) ?? [],
     curatedCategories: (raw.curatedCategories as string[]) ?? [],
+    tags: Array.isArray(raw.tags) ? (raw.tags as string[]) : [],
+    internalTags: Array.isArray(raw.internalTags) ? (raw.internalTags as string[]) : [],
+    metaDescription: (raw.metaDescription as string) ?? '',
+    featuredImage: (raw.featuredImage as string) ?? (raw.image as string) ?? '',
     seoArticle: (raw.seoArticle as string) ?? '',
     seoSourceOutput: (raw.seoSourceOutput as string) ?? '',
     sources: Array.isArray(raw.sources) ? (raw.sources as ContentSource[]) : [],
@@ -209,6 +217,10 @@ const ENTRY_DEFAULTS: Omit<ContentEntry, 'id' | 'title' | 'contentType' | 'audie
   excludeSmartBenefits: false,
   categories: [],
   curatedCategories: [],
+  tags: [],
+  internalTags: [],
+  metaDescription: '',
+  featuredImage: '',
   seoArticle: '',
   seoSourceOutput: '',
   sources: [],

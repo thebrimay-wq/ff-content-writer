@@ -51,6 +51,18 @@
   pointer-events: none;
 }
 
+/* ── Field highlight pulse — fires when a Publish Readiness checklist item
+       jumps the user to a missing field. */
+.ff-field-pulse {
+  animation: ffpulse 1.6s ease-out 1 both;
+  border-radius: 8px;
+}
+@keyframes ffpulse {
+  0%   { box-shadow: 0 0 0 0 rgba(245, 158, 11, 0); background-color: rgba(254, 243, 199, 0); }
+  18%  { box-shadow: 0 0 0 4px rgba(245, 158, 11, 0.35); background-color: rgba(254, 243, 199, 0.55); }
+  100% { box-shadow: 0 0 0 0 rgba(245, 158, 11, 0); background-color: rgba(254, 243, 199, 0); }
+}
+
 /* ── Highlighted phrase inside Money Tip titles ──────────────────────────── */
 mark.ff-highlight, .ff-highlight {
   background: #fef08a;
