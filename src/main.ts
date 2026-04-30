@@ -227,10 +227,13 @@ class FFApp extends LitElement {
   override connectedCallback() {
     super.connectedCallback()
     this._refreshEntries()
+    this._initCameo()
     window.addEventListener('beforeunload', this._onBeforeUnload)
     window.addEventListener('resize', this._onResize)
     document.addEventListener('click', this._onDocClickCloseRefine)
     document.addEventListener('keydown', this._onDocKeydownCloseRefine)
+    document.addEventListener('mousemove', this._onSparkleMove)
+    document.addEventListener('mousemove', this._onCameoMove)
   }
 
   override disconnectedCallback() {
@@ -239,6 +242,8 @@ class FFApp extends LitElement {
     window.removeEventListener('resize', this._onResize)
     document.removeEventListener('click', this._onDocClickCloseRefine)
     document.removeEventListener('keydown', this._onDocKeydownCloseRefine)
+    document.removeEventListener('mousemove', this._onSparkleMove)
+    document.removeEventListener('mousemove', this._onCameoMove)
     if (this._genMessageTimer != null) { clearInterval(this._genMessageTimer); this._genMessageTimer = null }
   }
 
@@ -251,6 +256,105 @@ class FFApp extends LitElement {
     if (e.key === 'Escape' && this._refineOpen) { this._refineOpen = false; this._refineCustom = '' }
     if (e.key === 'Escape' && this._regionPickerOpen) { this._regionPickerOpen = false }
   }
+
+  // ── Easter eggs: handlers ────────────────────────────────────────────────
+
+  private _wasInGateCorner = false
+
+  /** Sparkle trail in viewport corners + gate-greeting trigger in bottom-left while on gate. */
+  private _onSparkleMove = (e: MouseEvent) => {
+    const w = window.innerWidth, h = window.innerHeight
+    const inBL = e.clientX < 140 && e.clientY > h - 140
+    const inBR = e.clientX > w - 140 && e.clientY > h - 140
+
+    // Sparkle drips in either corner — but not over interactive elements
+    if (inBL || inBR) {
+      const target = e.target as HTMLElement | null
+      if (!target?.closest?.('button, a, input, textarea, select, [role="dialog"], [data-toolbar]')) {
+        const now = Date.now()
+        if (now - this._lastSparkleAt >= 90) {
+          this._lastSparkleAt = now
+          const id = Math.random()
+          this._sparkles = [...this._sparkles, { id, x: e.clientX, y: e.clientY }]
+          setTimeout(() => { this._sparkles = this._sparkles.filter(s => s.id !== id) }, 1100)
+        }
+      }
+    }
+
+    // Gate greeting fires on transition INTO the bottom-left while on the gate
+    if (this.mode === 'gate' && inBL) {
+      if (!this._wasInGateCorner && !this._gateGreeting) {
+        this._gateWiggle = true
+        this._gateGreeting = true
+        setTimeout(() => { this._gateWiggle = false }, 600)
+        setTimeout(() => { this._gateGreeting = false }, 3500)
+      }
+      this._wasInGateCorner = true
+    } else if (!inBL) {
+      this._wasInGateCorner = false
+    }
+  }
+
+  /** Coach cameo reveals when cursor enters bottom-right of the editor. */
+  private _onCameoMove = (e: MouseEvent) => {
+    if (this.mode !== 'editor') {
+      if (this._cameoVisible) this._cameoVisible = false
+      return
+    }
+    const w = window.innerWidth, h = window.innerHeight
+    const near = e.clientX > w - 220 && e.clientY > h - 220
+    if (near && !this._cameoVisible) {
+      this._cameoVisible = true
+      if (this._cameoHideTimer) { clearTimeout(this._cameoHideTimer); this._cameoHideTimer = null }
+    } else if (!near && this._cameoVisible) {
+      if (this._cameoHideTimer) clearTimeout(this._cameoHideTimer)
+      this._cameoHideTimer = setTimeout(() => {
+        this._cameoVisible = false
+        this._cameoBubbleOpen = false
+      }, 700)
+    }
+  }
+
+  private _initCameo() {
+    if (this._cameoPlanner) return
+    const stored = sessionStorage.getItem('ff_cameo_planner')
+    if (stored) {
+      try { this._cameoPlanner = JSON.parse(stored); return } catch { /* fall through */ }
+    }
+    if (PLANNERS.length === 0) return
+    const p = PLANNERS[Math.floor(Math.random() * PLANNERS.length)]
+    this._cameoPlanner = { id: p.id, name: p.name }
+    sessionStorage.setItem('ff_cameo_planner', JSON.stringify(this._cameoPlanner))
+  }
+
+  private _cameoTap = () => {
+    if (!this._cameoBubbleOpen) {
+      this._cameoBubbleOpen = true
+      this._cameoQuoteIdx = Math.floor(Math.random() * FFApp._COACH_WISDOM.length)
+    } else {
+      this._cameoQuoteIdx = (this._cameoQuoteIdx + 1) % FFApp._COACH_WISDOM.length
+    }
+  }
+
+  /** First Publish in a session releases a brief shower of brand-colored confetti. */
+  private _maybeFireConfetti() {
+    if (sessionStorage.getItem('ff_confetti_fired') === '1') return
+    sessionStorage.setItem('ff_confetti_fired', '1')
+    const palette = ['#063853', '#7c70e3', '#fbbf24', '#5dcaa5', '#f0997b', '#a3c4f3']
+    const pieces: typeof this._confettiPieces = []
+    for (let i = 0; i < 36; i++) {
+      pieces.push({
+        id: i,
+        left: Math.random() * 100,
+        delay: Math.random() * 0.5,
+        dur: 2.2 + Math.random() * 0.9,
+        bg: palette[Math.floor(Math.random() * palette.length)],
+      })
+    }
+    this._confettiPieces = pieces
+    setTimeout(() => { this._confettiPieces = [] }, 3500)
+  }
+
 
   /** Warn when leaving with unsaved work in the local draft buffer. The
    *  message text is browser-controlled in modern browsers — only the
@@ -839,6 +943,7 @@ class FFApp extends LitElement {
     patchEntry(this.editingId, { status: 'published', publishedAt: Date.now() })
     this._currentStatus = 'published'
     this._refreshEntries()
+    this._maybeFireConfetti()
   }
 
   /** Track the editing entry's status so the right-rail pill is honest. */
@@ -2007,6 +2112,83 @@ class FFApp extends LitElement {
         ${this._renderLinkModal()}
         ${this.showKeyPrompt ? this._renderKeyPrompt() : ''}
         ${this._aiFlipPromptOpen ? this._renderAiFlipPrompt() : ''}
+        ${this._renderConfetti()}
+        ${this._renderSparkles()}
+        ${this._renderGateGreeting()}
+        ${this._renderCameo()}
+      </div>
+    `
+  }
+
+  // ── Easter eggs: render ──────────────────────────────────────────────────
+
+  private _renderConfetti() {
+    if (this._confettiPieces.length === 0) return ''
+    return html`
+      <div class="ff-confetti-layer" aria-hidden="true">
+        ${this._confettiPieces.map(p => html`
+          <span class="ff-confetti-piece"
+            style="left: ${p.left}%; background: ${p.bg}; animation-delay: ${p.delay}s; animation-duration: ${p.dur}s;"></span>
+        `)}
+      </div>
+    `
+  }
+
+  private _renderSparkles() {
+    if (this._sparkles.length === 0) return ''
+    return html`${this._sparkles.map(s => html`
+      <span class="ff-sparkle" style="left: ${s.x}px; top: ${s.y}px;" aria-hidden="true">✨</span>
+    `)}`
+  }
+
+  private _renderGateGreeting() {
+    if (!this._gateGreeting) return ''
+    return html`
+      <div class="ff-greeting fixed top-20 left-1/2 z-50 bg-[#1a1a1a] text-white px-4 py-2 rounded-full text-[13px] font-medium shadow-lg flex items-center gap-2">
+        <span>✨</span> Hello, friend.
+      </div>
+    `
+  }
+
+  private _renderCameo() {
+    if (!this._cameoVisible || !this._cameoPlanner) return ''
+    const name = this._cameoPlanner.name
+    const firstName = name.split(',')[0].trim().split(' ')[0]
+    const initials = name.split(/[\s,]+/).filter(Boolean).slice(0, 2).map(w => w[0]?.toUpperCase()).join('')
+    const seed = this._cameoPlanner.id.split('').reduce((a, c) => a + c.charCodeAt(0), 0)
+    const palette = ['#063853', '#7c70e3', '#0f6e56', '#a32d2d', '#854f0b', '#993556']
+    const bg = palette[seed % palette.length]
+    // Photo file lives at public/coaches/<slug>.png. Slug strips parentheticals
+    // and trailing CFP®/credential noise so common name shapes resolve correctly.
+    const cleanName = name
+      .split(',')[0]                       // first comma onward → credentials
+      .replace(/\s*\([^)]+\)/g, '')        // parenthetical aliases like "(Carl)"
+      .replace(/\s*CFP[®\s]*$/, '')        // trailing "CFP®" without comma
+      .trim()
+    const slug = cleanName
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/(^-|-$)/g, '')
+    const photo = `${import.meta.env.BASE_URL}coaches/${slug}.png`
+
+    return html`
+      <div class="fixed bottom-4 right-4 z-50 ff-fade-in flex flex-col items-end gap-2 pointer-events-none">
+        ${this._cameoBubbleOpen ? html`
+          <div class="ff-greeting bg-white rounded-2xl shadow-xl border border-gray-200 px-4 py-3 max-w-[260px] pointer-events-auto">
+            <p class="text-[11px] font-semibold tracking-wide text-gray-500 mb-1">${firstName} says</p>
+            <p class="text-[14px] text-[#1a1a1a] leading-snug">"${FFApp._COACH_WISDOM[this._cameoQuoteIdx]}"</p>
+            <p class="text-[10px] text-gray-300 mt-1.5">tap for another</p>
+          </div>
+        ` : ''}
+        <button @click=${this._cameoTap}
+          title=${name}
+          class="w-12 h-12 rounded-full overflow-hidden text-white text-[14px] font-semibold shadow-lg hover:scale-110 transition-transform pointer-events-auto relative"
+          style="background: ${bg}">
+          <span class="absolute inset-0 flex items-center justify-center">${initials}</span>
+          <img src=${photo} alt=""
+            class="absolute inset-0 w-full h-full object-cover"
+            @error=${(e: Event) => { (e.target as HTMLImageElement).style.display = 'none' }} />
+        </button>
       </div>
     `
   }
@@ -2077,7 +2259,7 @@ class FFApp extends LitElement {
 
           <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-6">
             <button @click=${() => this._enterEditor('manual')}
-              class="group flex flex-col items-start gap-4 p-7 rounded-2xl bg-white border-2 border-gray-200 hover:border-[#063853] hover:shadow-lg transition-all text-left">
+              class="group flex flex-col items-start gap-4 p-7 rounded-2xl bg-white border-2 border-gray-200 hover:border-[#063853] hover:shadow-lg transition-all text-left ${this._gateWiggle ? 'ff-wiggle' : ''}">
               <div class="w-14 h-14 rounded-xl bg-[#063853]/[0.06] group-hover:bg-[#063853]/[0.12] flex items-center justify-center transition-colors">
                 <svg width="26" height="26" viewBox="0 0 26 26" fill="none"><path d="M18 4l4 4-12 12-5 1 1-5L18 4z" stroke="#063853" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
               </div>
@@ -2092,7 +2274,7 @@ class FFApp extends LitElement {
             </button>
 
             <button @click=${() => this._enterEditor('ai')}
-              class="group flex flex-col items-start gap-4 p-7 rounded-2xl bg-white border-2 border-gray-200 hover:border-[#7c70e3] hover:shadow-lg transition-all text-left">
+              class="group flex flex-col items-start gap-4 p-7 rounded-2xl bg-white border-2 border-gray-200 hover:border-[#7c70e3] hover:shadow-lg transition-all text-left ${this._gateWiggle ? 'ff-wiggle' : ''}">
               <div class="w-14 h-14 rounded-xl bg-violet-50 group-hover:bg-violet-100 flex items-center justify-center transition-colors">
                 <svg width="26" height="26" viewBox="0 0 26 26" fill="none"><path d="M13 3l2.5 7.5L23 13l-7.5 2.5L13 23l-2.5-7.5L3 13l7.5-2.5L13 3z" fill="#7c70e3"/></svg>
               </div>
@@ -4142,6 +4324,34 @@ class FFApp extends LitElement {
   // Active table cell — drives the table-editing mini-toolbar.
   @state() private _tableCell: HTMLTableCellElement | null = null
   @state() private _tableRect: DOMRect | null = null
+
+  // ── Easter eggs ──────────────────────────────────────────────────────────
+  @state() private _confettiPieces: Array<{ id: number; left: number; delay: number; bg: string; dur: number }> = []
+  @state() private _sparkles: Array<{ id: number; x: number; y: number }> = []
+  @state() private _gateGreeting = false
+  @state() private _gateWiggle = false
+  @state() private _cameoVisible = false
+  @state() private _cameoBubbleOpen = false
+  @state() private _cameoQuoteIdx = 0
+  private _cameoPlanner: { id: string; name: string } | null = null
+  private _lastSparkleAt = 0
+  private _cameoHideTimer: ReturnType<typeof setTimeout> | null = null
+
+  /** 12 short pieces of Financial Finesse-flavored wisdom. */
+  private static readonly _COACH_WISDOM = [
+    'Pay yourself first.',
+    "An emergency fund isn't pessimism — it's permission.",
+    "The market doesn't care about your feelings.",
+    'Compound interest is the closest thing to magic in finance.',
+    'Saving small beats saving never.',
+    "Debt with a number ends. Debt without one doesn't.",
+    'Time in the market beats timing the market.',
+    'Your future self is a real person.',
+    'Budget the joy, too.',
+    'Automate the boring decisions.',
+    'Wealth grows on quiet days.',
+    'Spend like it cost you twice.',
+  ]
   // HTML/source viewer mode (admin/dev convenience).
   @state() private _viewMode: 'edit' | 'source' = 'edit'
   @state() private _sourceTab: 'html' | 'raw' = 'html'
