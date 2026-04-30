@@ -94,7 +94,7 @@ function newId(): string {
   return `c_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`
 }
 
-function deriveSlug(topic: string): string {
+export function deriveSlug(topic: string): string {
   return topic
     .toLowerCase()
     .replace(/[^a-z0-9\s-]/g, '')
