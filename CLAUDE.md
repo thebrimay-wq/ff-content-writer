@@ -81,8 +81,4 @@
 - Status values: `draft | in_review | approved | published | trash`. The right-rail pill reflects `_currentStatus`.
 
 ## Known deferred work
-- `related_resources` editor for User Story / Video / Calculator / Infographic
-- Checklist `subItems` editor and per-section `image` upload
-- Quiz `correctAnswerIds` editor (knowledge-type scoring) and per-answer `pointValue` / `isCorrect` toggles
-- Drag-and-drop image upload (UI hint exists but only file picker works)
 - Audience dropdown copy ("We'll tune tone and depth") doesn't match the FF-specific value set (Crisis / Struggling / Planning / Optimizing)

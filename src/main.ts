@@ -741,6 +741,7 @@ class FFApp extends LitElement {
   // Right-rail tab navigation. AI Context and Advanced never show "missing" badges.
   @state() private _rightTab: 'basics' | 'categories' | 'seo' | 'ai' | 'advanced' = 'basics'
   @state() private _highlightedField = ''             // pulses the matching [data-field] when set
+  @state() private _dropTarget = ''                    // which image uploader is in drag-hover state
 
   /** Hydrate the right-rail metadata from a loaded entry. */
   private _hydrateMeta(entry: ContentEntry) {
@@ -2227,6 +2228,31 @@ class FFApp extends LitElement {
     this._slug = deriveSlug((title ?? '').replace(/<[^>]+>/g, '').trim())
   }
 
+  /** Read a File as a data URL, then forward to the caller's onChange. */
+  private _readImageFile(file: File, onChange: (dataUrl: string) => void) {
+    if (!file.type.startsWith('image/')) return
+    const reader = new FileReader()
+    reader.onload = (ev) => onChange(ev.target?.result as string)
+    reader.readAsDataURL(file)
+  }
+
+  /** Drag/drop event handlers for an image upload zone. Returns { handlers, klass }
+   *  — caller spreads handlers onto the dropzone element and applies `klass` for
+   *  the visual hover state. The hover class is keyed to `key`, so multiple
+   *  uploaders on the same page don't all light up at once. */
+  private _imageDropHandlers(key: string, onChange: (dataUrl: string) => void) {
+    const dragActive = this._dropTarget === key
+    const set = (active: boolean) => { if ((this._dropTarget === key) !== active) this._dropTarget = active ? key : '' }
+    const onDragOver = (e: DragEvent) => { e.preventDefault(); if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy'; set(true) }
+    const onDragLeave = (e: DragEvent) => { if (e.target === e.currentTarget) set(false) }
+    const onDrop = (e: DragEvent) => {
+      e.preventDefault(); set(false)
+      const f = e.dataTransfer?.files?.[0]
+      if (f) this._readImageFile(f, onChange)
+    }
+    return { onDragOver, onDragLeave, onDrop, klass: dragActive ? 'border-[#063853] bg-[#063853]/[0.04]' : '' }
+  }
+
   /** Reusable image upload control for thumbnail / hero fields. */
   private _renderImageUploader(opts: {
     label: string
@@ -2234,8 +2260,12 @@ class FFApp extends LitElement {
     onChange: (dataUrl: string) => void
     onRemove: () => void
     height?: string
+    /** Stable key so two uploaders on the same canvas don't share drag state. */
+    dropKey?: string
   }) {
     const h = opts.height ?? 'h-32'
+    const dropKey = opts.dropKey ?? opts.label
+    const drop = this._imageDropHandlers(dropKey, opts.onChange)
     return html`
       <div class="flex flex-col gap-1.5">
         <label class="text-[10px] font-bold tracking-widest uppercase text-gray-500">${opts.label}</label>
@@ -2249,16 +2279,17 @@ class FFApp extends LitElement {
           </div>
         ` : html`
           <div class="flex flex-col gap-2">
-            <label class="cursor-pointer bg-gray-50 hover:bg-gray-100 transition-colors rounded-lg p-5 text-center border-2 border-dashed border-gray-200 hover:border-gray-300 block">
-              <p class="text-[12px] text-gray-700">Click to upload</p>
+            <label
+              @dragover=${drop.onDragOver}
+              @dragleave=${drop.onDragLeave}
+              @drop=${drop.onDrop}
+              class="cursor-pointer bg-gray-50 hover:bg-gray-100 transition-colors rounded-lg p-5 text-center border-2 border-dashed border-gray-200 hover:border-gray-300 block ${drop.klass}">
+              <p class="text-[12px] text-gray-700">${this._dropTarget === dropKey ? 'Drop to upload' : 'Click or drop to upload'}</p>
               <p class="text-[11px] text-gray-400">PNG, JPG, SVG</p>
               <input type="file" accept="image/*" class="hidden"
                 @change=${(e: Event) => {
                   const f = (e.target as HTMLInputElement).files?.[0]
-                  if (!f) return
-                  const reader = new FileReader()
-                  reader.onload = (ev) => opts.onChange(ev.target?.result as string)
-                  reader.readAsDataURL(f)
+                  if (f) this._readImageFile(f, opts.onChange)
                 }} />
             </label>
             <input type="url"
@@ -2269,6 +2300,63 @@ class FFApp extends LitElement {
               placeholder="…or paste an image URL"
               class="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[12px] outline-none focus:border-gray-400" />
           </div>
+        `}
+      </div>
+    `
+  }
+
+  /** Mutators + renderer for the `related_resources: { title, content_type }[]`
+   *  array shared by user_story / video / calculator / infographic. */
+  private _addRelatedResource() {
+    this._updateJson<any>(c => ({ ...c, related_resources: [...(c.related_resources ?? []), { title: '', content_type: 'article' }] }))
+  }
+  private _updateRelatedResource(idx: number, field: 'title' | 'content_type', value: string) {
+    this._updateJson<any>(c => ({
+      ...c,
+      related_resources: (c.related_resources ?? []).map((r: any, i: number) => i === idx ? { ...r, [field]: value } : r),
+    }))
+  }
+  private _removeRelatedResource(idx: number) {
+    this._updateJson<any>(c => ({ ...c, related_resources: (c.related_resources ?? []).filter((_: any, i: number) => i !== idx) }))
+  }
+
+  private _renderRelatedResources(list: Array<{ title: string; content_type: string }>) {
+    return html`
+      <div class="mt-8 pt-6 border-t border-gray-100">
+        <p class="text-[11px] font-bold tracking-widest uppercase text-gray-500 mb-1">Related resources</p>
+        <p class="text-[12px] text-gray-400 mb-3">Other content to point readers toward. Optional.</p>
+        ${(list ?? []).length ? html`
+          <div class="flex flex-col gap-2 mb-3">
+            ${(list ?? []).map((r, idx) => html`
+              <div class="group/rel flex items-center gap-2">
+                <input type="text"
+                  ?disabled=${this.isGenerating}
+                  .value=${r.title ?? ''}
+                  @blur=${(e: Event) => this._updateRelatedResource(idx, 'title', (e.target as HTMLInputElement).value.trim())}
+                  placeholder="Resource title"
+                  class="flex-1 rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-[13px] outline-none focus:border-gray-400" />
+                <select
+                  ?disabled=${this.isGenerating}
+                  .value=${r.content_type ?? 'article'}
+                  @change=${(e: Event) => this._updateRelatedResource(idx, 'content_type', (e.target as HTMLSelectElement).value)}
+                  class="rounded-md border border-gray-200 bg-white px-2 py-1.5 text-[12px] outline-none focus:border-gray-400 cursor-pointer">
+                  ${Object.entries(V2_TYPE_LABELS).map(([k, v]) => html`<option value=${k} ?selected=${k === r.content_type}>${v}</option>`)}
+                </select>
+                ${this.isGenerating ? '' : html`
+                  <button @click=${() => this._removeRelatedResource(idx)}
+                    title="Remove"
+                    class="opacity-0 group-hover/rel:opacity-100 text-gray-300 hover:text-red-500 text-[12px] transition-opacity">×</button>
+                `}
+              </div>
+            `)}
+          </div>
+        ` : ''}
+        ${this.isGenerating ? '' : html`
+          <button @click=${() => this._addRelatedResource()}
+            class="flex items-center gap-1.5 text-[12px] font-semibold text-[#063853] hover:text-[#04293D] px-3 py-1.5 rounded-lg border border-dashed border-gray-300 hover:border-[#063853] hover:bg-gray-50 transition-colors">
+            <svg width="11" height="11" viewBox="0 0 11 11" fill="none"><path d="M5.5 1v9M1 5.5h9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+            Add related resource
+          </button>
         `}
       </div>
     `
@@ -2315,6 +2403,7 @@ class FFApp extends LitElement {
               @blur=${(e: Event) => this._setSimpleField('copy', (e.target as HTMLElement).innerHTML)}
             >${unsafeHTML(v?.copy ?? '')}</div>
           </div>
+          ${this._renderRelatedResources(v?.related_resources ?? [])}
         </div>
       </div>
     `
@@ -2360,6 +2449,7 @@ class FFApp extends LitElement {
               @blur=${(e: Event) => this._setSimpleField('copy', (e.target as HTMLElement).innerHTML)}
             >${unsafeHTML(c?.copy ?? '')}</div>
           </div>
+          ${this._renderRelatedResources(c?.related_resources ?? [])}
         </div>
       </div>
     `
@@ -2399,32 +2489,37 @@ class FFApp extends LitElement {
                   Remove
                 </button>
               </div>
-            ` : html`
-              <label class="cursor-pointer bg-gray-50 hover:bg-gray-100 transition-colors rounded-lg p-10 text-center border-2 border-dashed border-gray-200 hover:border-gray-300 block">
-                <div class="w-16 h-12 mx-auto mb-3 rounded-md border border-dashed border-gray-300 flex items-center justify-center text-gray-300">
-                  <svg width="22" height="22" viewBox="0 0 22 22" fill="none"><rect x="2" y="3" width="18" height="14" rx="1.5" stroke="currentColor" stroke-width="1.2"/><circle cx="7.5" cy="9" r="1.5" stroke="currentColor" stroke-width="1.2"/><path d="M3 16l5-5 4 4 3-3 4 4" stroke="currentColor" stroke-width="1.2"/></svg>
-                </div>
-                <p class="text-[13px] text-gray-700 mb-1">Click to upload</p>
-                <p class="text-[12px] text-gray-400">PNG, JPG, SVG</p>
-                <input type="file" accept="image/*" class="hidden"
-                  @change=${(e: Event) => {
-                    const f = (e.target as HTMLInputElement).files?.[0]
-                    if (!f) return
-                    const reader = new FileReader()
-                    reader.onload = (ev) => this._setSimpleField('infographic_image', ev.target?.result as string)
-                    reader.readAsDataURL(f)
-                  }} />
-              </label>
-              <p class="text-center text-[11px] text-gray-400 my-1">or paste an image URL</p>
-              <input type="url"
-                @blur=${(e: Event) => {
-                  const v = (e.target as HTMLInputElement).value.trim()
-                  if (v) this._setSimpleField('infographic_image', v)
-                }}
-                placeholder="https://…"
-                class="w-full rounded-lg border border-gray-200 bg-white px-3.5 py-2.5 text-[13px] outline-none focus:border-gray-400" />
-            `}
+            ` : (() => {
+              const drop = this._imageDropHandlers('infographic_image', (val) => this._setSimpleField('infographic_image', val))
+              return html`
+                <label
+                  @dragover=${drop.onDragOver}
+                  @dragleave=${drop.onDragLeave}
+                  @drop=${drop.onDrop}
+                  class="cursor-pointer bg-gray-50 hover:bg-gray-100 transition-colors rounded-lg p-10 text-center border-2 border-dashed border-gray-200 hover:border-gray-300 block ${drop.klass}">
+                  <div class="w-16 h-12 mx-auto mb-3 rounded-md border border-dashed border-gray-300 flex items-center justify-center text-gray-300">
+                    <svg width="22" height="22" viewBox="0 0 22 22" fill="none"><rect x="2" y="3" width="18" height="14" rx="1.5" stroke="currentColor" stroke-width="1.2"/><circle cx="7.5" cy="9" r="1.5" stroke="currentColor" stroke-width="1.2"/><path d="M3 16l5-5 4 4 3-3 4 4" stroke="currentColor" stroke-width="1.2"/></svg>
+                  </div>
+                  <p class="text-[13px] text-gray-700 mb-1">${this._dropTarget === 'infographic_image' ? 'Drop to upload' : 'Click or drop to upload'}</p>
+                  <p class="text-[12px] text-gray-400">PNG, JPG, SVG</p>
+                  <input type="file" accept="image/*" class="hidden"
+                    @change=${(e: Event) => {
+                      const f = (e.target as HTMLInputElement).files?.[0]
+                      if (f) this._readImageFile(f, (val) => this._setSimpleField('infographic_image', val))
+                    }} />
+                </label>
+                <p class="text-center text-[11px] text-gray-400 my-1">or paste an image URL</p>
+                <input type="url"
+                  @blur=${(e: Event) => {
+                    const v = (e.target as HTMLInputElement).value.trim()
+                    if (v) this._setSimpleField('infographic_image', v)
+                  }}
+                  placeholder="https://…"
+                  class="w-full rounded-lg border border-gray-200 bg-white px-3.5 py-2.5 text-[13px] outline-none focus:border-gray-400" />
+              `
+            })()}
           </div>
+          ${this._renderRelatedResources(g?.related_resources ?? [])}
         </div>
       </div>
     `
@@ -2534,19 +2629,59 @@ class FFApp extends LitElement {
                 contenteditable=${this.isGenerating ? 'false' : 'true'}
                 @blur=${(e: Event) => this._updateChecklistSection(sIdx, 'description', (e.target as HTMLElement).innerText.trim())}
               >${sec.description ?? ''}</p>
+              <div class="mb-3">
+                ${this._renderImageUploader({
+                  label: 'Section icon (optional)',
+                  value: sec.image ?? '',
+                  onChange: (v) => this._setChecklistSectionImage(sIdx, v),
+                  onRemove: () => this._setChecklistSectionImage(sIdx, ''),
+                  height: 'h-16',
+                  dropKey: `checklist-sec-${sIdx}`,
+                })}
+              </div>
               <ul class="flex flex-col gap-2">
                 ${(sec.items ?? []).map((it, iIdx) => html`
-                  <li class="group/item flex items-start gap-2.5 text-[14px] text-gray-800">
-                    <span class="mt-1 w-4 h-4 rounded border border-gray-300 shrink-0"></span>
-                    <span
-                      data-placeholder="Type a checklist item…"
-                      class="flex-1 outline-none focus:bg-amber-50/40 rounded px-1 -mx-1"
-                      contenteditable=${this.isGenerating ? 'false' : 'true'}
-                      @blur=${(e: Event) => this._updateChecklistItem(sIdx, iIdx, (e.target as HTMLElement).innerHTML)}
-                    >${unsafeHTML(it.label ?? '')}</span>
+                  <li class="group/item flex flex-col gap-1.5 text-[14px] text-gray-800">
+                    <div class="flex items-start gap-2.5">
+                      <span class="mt-1 w-4 h-4 rounded border border-gray-300 shrink-0"></span>
+                      <span
+                        data-placeholder="Type a checklist item…"
+                        class="flex-1 outline-none focus:bg-amber-50/40 rounded px-1 -mx-1"
+                        contenteditable=${this.isGenerating ? 'false' : 'true'}
+                        @blur=${(e: Event) => this._updateChecklistItem(sIdx, iIdx, (e.target as HTMLElement).innerHTML)}
+                      >${unsafeHTML(it.label ?? '')}</span>
+                      ${this.isGenerating ? '' : html`
+                        <button @click=${() => this._removeChecklistItem(sIdx, iIdx)}
+                          title="Remove item"
+                          class="opacity-0 group-hover/item:opacity-100 text-gray-300 hover:text-red-500 text-[11px] transition-opacity">×</button>
+                      `}
+                    </div>
+                    ${(it.subItems ?? []).length ? html`
+                      <ul class="ml-7 flex flex-col gap-1">
+                        ${(it.subItems ?? []).map((sub, subIdx) => html`
+                          <li class="group/sub flex items-start gap-2 text-[13px] text-gray-600">
+                            <span class="mt-1 w-1.5 h-1.5 rounded-full bg-gray-300 shrink-0"></span>
+                            <span
+                              data-placeholder="Sub-item…"
+                              class="flex-1 outline-none focus:bg-amber-50/40 rounded px-1 -mx-1"
+                              contenteditable=${this.isGenerating ? 'false' : 'true'}
+                              @blur=${(e: Event) => this._updateChecklistSubItem(sIdx, iIdx, subIdx, (e.target as HTMLElement).innerText.trim())}
+                            >${sub ?? ''}</span>
+                            ${this.isGenerating ? '' : html`
+                              <button @click=${() => this._removeChecklistSubItem(sIdx, iIdx, subIdx)}
+                                title="Remove sub-item"
+                                class="opacity-0 group-hover/sub:opacity-100 text-gray-300 hover:text-red-500 text-[11px] transition-opacity">×</button>
+                            `}
+                          </li>
+                        `)}
+                      </ul>
+                    ` : ''}
                     ${this.isGenerating ? '' : html`
-                      <button @click=${() => this._removeChecklistItem(sIdx, iIdx)}
-                        class="opacity-0 group-hover/item:opacity-100 text-gray-300 hover:text-red-500 text-[11px] transition-opacity">×</button>
+                      <button @click=${() => this._addChecklistSubItem(sIdx, iIdx)}
+                        class="ml-7 self-start opacity-0 group-hover/item:opacity-100 transition-opacity text-[10.5px] text-gray-400 hover:text-[#063853] flex items-center gap-1">
+                        <svg width="9" height="9" viewBox="0 0 11 11" fill="none"><path d="M5.5 1v9M1 5.5h9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+                        Add sub-item
+                      </button>
                     `}
                   </li>
                 `)}
@@ -2727,6 +2862,7 @@ class FFApp extends LitElement {
             contenteditable=${this.isGenerating ? 'false' : 'true'}
             @blur=${(e: Event) => this._updateStoryField('copy', (e.target as HTMLElement).innerHTML)}
           >${unsafeHTML(u?.copy ?? '')}</div>
+          ${this._renderRelatedResources((us as any)?.related_resources ?? [])}
         </div>
       </div>
     `
@@ -2792,6 +2928,26 @@ class FFApp extends LitElement {
                       contenteditable=${this.isGenerating ? 'false' : 'true'}
                       @blur=${(e: Event) => this._updateAnswer(qIdx, aIdx, (e.target as HTMLElement).innerText.trim())}
                     >${a.answerText ?? ''}</span>
+                    ${q?.quizType === 'knowledge' ? html`
+                      <label
+                        title="Mark as a correct answer"
+                        class="flex items-center gap-1 text-[10.5px] font-semibold uppercase tracking-wider cursor-pointer ${a.isCorrect ? 'text-emerald-700' : 'text-gray-400 hover:text-gray-600'}">
+                        <input type="checkbox" class="accent-emerald-600 cursor-pointer"
+                          .checked=${!!a.isCorrect}
+                          ?disabled=${this.isGenerating}
+                          @change=${(e: Event) => this._toggleAnswerCorrect(qIdx, aIdx, (e.target as HTMLInputElement).checked)} />
+                        Correct
+                      </label>
+                    ` : ''}
+                    ${q?.quizType !== 'classification' ? html`
+                      <input type="number" min="0" step="1"
+                        title="Point value"
+                        ?disabled=${this.isGenerating}
+                        .value=${a.pointValue == null ? '' : String(a.pointValue)}
+                        @blur=${(e: Event) => this._setAnswerPoints(qIdx, aIdx, (e.target as HTMLInputElement).value)}
+                        placeholder="pts"
+                        class="w-12 rounded border border-gray-200 px-1.5 py-0.5 text-[11px] outline-none focus:border-gray-400 text-center shrink-0" />
+                    ` : ''}
                     ${this.isGenerating || (qq.answers?.length ?? 0) <= 2 ? '' : html`
                       <button @click=${() => this._removeAnswer(qIdx, aIdx)}
                         title="Remove answer"
@@ -2863,6 +3019,25 @@ class FFApp extends LitElement {
                   contenteditable=${this.isGenerating ? 'false' : 'true'}
                   @blur=${(e: Event) => this._updateRubric(idx, 'label', (e.target as HTMLElement).innerText.trim())}
                 >${c.label ?? ''}</p>
+                ${q?.quizType === 'tiered' || q?.quizType === 'knowledge' ? html`
+                  <div class="flex items-center gap-2 mb-2 text-[11px] text-gray-500">
+                    <label class="font-semibold tracking-wider uppercase text-gray-400">Score range</label>
+                    <input type="number" min="0" step="1"
+                      ?disabled=${this.isGenerating}
+                      .value=${c.start == null ? '' : String(c.start)}
+                      @blur=${(e: Event) => this._setRubricRange(idx, 'start', (e.target as HTMLInputElement).value)}
+                      placeholder="min"
+                      class="w-16 rounded border border-gray-200 px-1.5 py-0.5 text-[11px] outline-none focus:border-gray-400 text-center" />
+                    <span class="text-gray-300">→</span>
+                    <input type="number" min="0" step="1"
+                      ?disabled=${this.isGenerating}
+                      .value=${c.end == null ? '' : String(c.end)}
+                      @blur=${(e: Event) => this._setRubricRange(idx, 'end', (e.target as HTMLInputElement).value)}
+                      placeholder="max"
+                      class="w-16 rounded border border-gray-200 px-1.5 py-0.5 text-[11px] outline-none focus:border-gray-400 text-center" />
+                    <span class="text-gray-400">points</span>
+                  </div>
+                ` : ''}
                 <p
                   data-placeholder="Result description shown to the user…"
                   class="text-[13px] text-gray-700 leading-relaxed mb-2 outline-none focus:bg-amber-50/40 rounded px-1 -mx-1"
@@ -3083,6 +3258,41 @@ class FFApp extends LitElement {
       })),
     }))
   }
+  /** Toggle the "Correct answer" flag on a knowledge-quiz answer. Multiple
+   *  correct answers per question are allowed (supports multi-select questions).
+   *  Keeps `correctAnswerIds` (the canonical flat list) in sync with the
+   *  per-answer `isCorrect` flags. */
+  private _toggleAnswerCorrect(qIdx: number, aIdx: number, checked: boolean) {
+    this._updateJson<Quiz>(q => {
+      const questions = (q.questions ?? []).map((qq, i) => i !== qIdx ? qq : ({
+        ...qq,
+        answers: (qq.answers ?? []).map((a, j) => j !== aIdx ? a : ({ ...a, isCorrect: checked })),
+      }))
+      const ids = questions.flatMap(qq => (qq.answers ?? []).filter(a => a.isCorrect).map(a => a.answerId))
+      return { ...q, questions, correctAnswerIds: ids.length ? ids : null }
+    })
+  }
+  /** Set the point value on an answer. Empty input → null (unset). */
+  private _setAnswerPoints(qIdx: number, aIdx: number, raw: string) {
+    const n = raw.trim() === '' ? null : Number(raw)
+    const value = (n !== null && Number.isFinite(n)) ? n : null
+    this._updateJson<Quiz>(q => ({
+      ...q,
+      questions: (q.questions ?? []).map((qq, i) => i !== qIdx ? qq : ({
+        ...qq,
+        answers: (qq.answers ?? []).map((a, j) => j !== aIdx ? a : ({ ...a, pointValue: value })),
+      })),
+    }))
+  }
+  /** Set the score range bound (start/end) on a rubric criterion (tiered quiz). */
+  private _setRubricRange(idx: number, field: 'start' | 'end', raw: string) {
+    const n = raw.trim() === '' ? null : Number(raw)
+    const value = (n !== null && Number.isFinite(n)) ? n : null
+    this._updateJson<Quiz>(q => ({
+      ...q,
+      rubric: { criteria: (q.rubric?.criteria ?? []).map((c, i) => i === idx ? { ...c, [field]: value } : c) },
+    }))
+  }
   private _addQuestion() {
     const id = newId()
     const newQ = { questionId: id, questionText: 'New question', tip: '', explanation: '', answers: [
@@ -3199,6 +3409,49 @@ class FFApp extends LitElement {
       ...cl,
       sections: (cl.sections ?? []).map((s, si) => si !== sIdx ? s : ({
         ...s, tip: { ...(s.tip ?? { image: null, title: '', description: '' }), [field]: value },
+      })),
+    }))
+  }
+  /** Set or clear the section icon image. Empty string ⇒ null. */
+  private _setChecklistSectionImage(sIdx: number, value: string) {
+    this._updateJson<Checklist>(cl => ({
+      ...cl,
+      sections: (cl.sections ?? []).map((s, si) => si !== sIdx ? s : ({ ...s, image: value || null })),
+    }))
+  }
+  private _addChecklistSubItem(sIdx: number, iIdx: number) {
+    this._updateJson<Checklist>(cl => ({
+      ...cl,
+      sections: (cl.sections ?? []).map((s, si) => si !== sIdx ? s : ({
+        ...s,
+        items: (s.items ?? []).map((it, ii) => ii !== iIdx ? it : ({
+          ...it, subItems: [...(it.subItems ?? []), ''],
+        })),
+      })),
+    }))
+  }
+  private _updateChecklistSubItem(sIdx: number, iIdx: number, subIdx: number, value: string) {
+    this._updateJson<Checklist>(cl => ({
+      ...cl,
+      sections: (cl.sections ?? []).map((s, si) => si !== sIdx ? s : ({
+        ...s,
+        items: (s.items ?? []).map((it, ii) => ii !== iIdx ? it : ({
+          ...it, subItems: (it.subItems ?? []).map((sub, k) => k === subIdx ? value : sub),
+        })),
+      })),
+    }))
+  }
+  private _removeChecklistSubItem(sIdx: number, iIdx: number, subIdx: number) {
+    this._updateJson<Checklist>(cl => ({
+      ...cl,
+      sections: (cl.sections ?? []).map((s, si) => si !== sIdx ? s : ({
+        ...s,
+        items: (s.items ?? []).map((it, ii) => ii !== iIdx ? it : ({
+          ...it,
+          subItems: ((it.subItems ?? []).filter((_, k) => k !== subIdx)).length
+            ? (it.subItems ?? []).filter((_, k) => k !== subIdx)
+            : null,
+        })),
       })),
     }))
   }
