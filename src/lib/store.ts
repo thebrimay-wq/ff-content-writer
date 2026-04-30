@@ -66,6 +66,11 @@ export interface ContentEntry {
   assignee: string              // name/email of reviewer — drives "My queue"
   reviewNotes: string           // most recent review message; shown as banner when in_review
   creationMode: 'ai' | 'manual' // how the writer started the draft — drives sidebar layout on reopen
+  // Review / publishing trail
+  submittedForReviewAt: number | null  // set when writer submits a draft into the review queue
+  reviewedBy: string                   // reviewer name captured from the review panel
+  reviewedAt: number | null            // when the reviewer confirmed (Save review or Publish)
+  publishedBy: string                  // reviewer who pressed Publish; stored alongside publishedAt
   // Trash retention
   deletedAt: number | null      // set when status flips to 'trash'; drives 30-day auto-purge
 }
@@ -163,6 +168,10 @@ function migrate(raw: Record<string, unknown>): ContentEntry {
     relatedResources: Array.isArray(raw.relatedResources) ? (raw.relatedResources as RelatedResourceRef[]) : [],
     assignee: (raw.assignee as string) ?? '',
     reviewNotes: (raw.reviewNotes as string) ?? '',
+    submittedForReviewAt: typeof raw.submittedForReviewAt === 'number' ? raw.submittedForReviewAt : null,
+    reviewedBy: (raw.reviewedBy as string) ?? '',
+    reviewedAt: typeof raw.reviewedAt === 'number' ? raw.reviewedAt : null,
+    publishedBy: (raw.publishedBy as string) ?? '',
     deletedAt: typeof raw.deletedAt === 'number' ? raw.deletedAt : null,
     creationMode: raw.creationMode === 'manual' ? 'manual' : 'ai',
   }
@@ -240,6 +249,10 @@ const ENTRY_DEFAULTS: Omit<ContentEntry, 'id' | 'title' | 'contentType' | 'audie
   relatedResources: [],
   assignee: '',
   reviewNotes: '',
+  submittedForReviewAt: null,
+  reviewedBy: '',
+  reviewedAt: null,
+  publishedBy: '',
   deletedAt: null,
   creationMode: 'ai',
 }

@@ -336,10 +336,8 @@ class FFApp extends LitElement {
     }
   }
 
-  /** First Publish in a session releases a brief shower of brand-colored confetti. */
+  /** Every Publish releases a brief shower of brand-colored confetti. */
   private _maybeFireConfetti() {
-    if (sessionStorage.getItem('ff_confetti_fired') === '1') return
-    sessionStorage.setItem('ff_confetti_fired', '1')
     const palette = ['#063853', '#7c70e3', '#fbbf24', '#5dcaa5', '#f0997b', '#a3c4f3']
     const pieces: typeof this._confettiPieces = []
     for (let i = 0; i < 36; i++) {
@@ -930,24 +928,82 @@ class FFApp extends LitElement {
     if (this.topic.trim()) this._generate()
   }
 
-  /** Persist if needed, then flip status to published. */
+  /** Persist if needed, then flip status to published. Requires a reviewer
+   *  name + confirmation checkbox — the review panel surfaces both. */
   private _publish() {
     if (!this.output.trim() || this.isGenerating) return
-    // Defense in depth: the button is already disabled when readiness fails,
-    // but never publish a half-formed entry just because someone reached this
-    // path another way (programmatic, race after unblock, etc.).
     if (!this._canPublish) return
-    // Save first so we have an editingId to patch.
+    const reviewer = this._reviewerName.trim()
+    if (!reviewer || !this._reviewConfirmed) return
     if (!this.editingId || this.isDirty) this._save()
     if (!this.editingId) return
-    patchEntry(this.editingId, { status: 'published', publishedAt: Date.now() })
+    const now = Date.now()
+    patchEntry(this.editingId, {
+      status: 'published',
+      reviewedBy: reviewer,
+      reviewedAt: this._reviewedAt ?? now,
+      publishedAt: now,
+      publishedBy: reviewer,
+    })
     this._currentStatus = 'published'
+    this._reviewedAt = this._reviewedAt ?? now
+    this._publishedAt = now
     this._refreshEntries()
     this._maybeFireConfetti()
   }
 
+  /** Move a draft into the review queue. Records the submission timestamp so
+   *  the Library "Pending publishing review" box can sort by it. */
+  private _submitForReview() {
+    if (!this.output.trim() || this.isGenerating) return
+    if (!this._canPublish) return
+    if (!this.editingId || this.isDirty) this._save()
+    if (!this.editingId) return
+    const now = Date.now()
+    patchEntry(this.editingId, { status: 'in_review', submittedForReviewAt: now })
+    this._currentStatus = 'in_review'
+    this._submittedForReviewAt = now
+    this._refreshEntries()
+  }
+
+  /** Save the reviewer's name + confirmation without publishing. Moves the
+   *  entry into "Ready to publish" so it leaves the pending queue. */
+  private _saveReview() {
+    const reviewer = this._reviewerName.trim()
+    if (!reviewer || !this._reviewConfirmed) return
+    if (!this.editingId || this.isDirty) this._save()
+    if (!this.editingId) return
+    const now = Date.now()
+    patchEntry(this.editingId, {
+      status: 'approved',
+      reviewedBy: reviewer,
+      reviewedAt: now,
+    })
+    this._currentStatus = 'approved'
+    this._reviewedAt = now
+    this._refreshEntries()
+  }
+
+  /** Pull a submitted entry back to draft (writer wants to keep editing). */
+  private _cancelReview() {
+    if (!this.editingId) return
+    patchEntry(this.editingId, { status: 'draft', submittedForReviewAt: null })
+    this._currentStatus = 'draft'
+    this._submittedForReviewAt = null
+    this._refreshEntries()
+  }
+
   /** Track the editing entry's status so the right-rail pill is honest. */
   @state() private _currentStatus: ContentStatus = 'draft'
+
+  // ── Review / publishing panel state ───────────────────────────────────────
+  // Reviewer name + confirmation checkbox gate the Publish button. Hydrated
+  // from the entry on load so a previously-saved review survives a reopen.
+  @state() private _reviewerName = ''
+  @state() private _reviewConfirmed = false
+  @state() private _submittedForReviewAt: number | null = null
+  @state() private _reviewedAt: number | null = null
+  @state() private _publishedAt: number | null = null
 
   // ── Right-rail metadata (mirrors ContentEntry — synced on load/save) ───────
   // The fields a writer actually touches. Hydrated on entry load, written back
@@ -1040,6 +1096,15 @@ class FFApp extends LitElement {
     this._highlightedField = ''
     // Treat slug as auto if the saved slug still matches the topic-derived form.
     this._slugAutoFromTitle = !this._slug || this._slug === deriveSlug(entry.topic ?? '')
+    // Review trail
+    this._reviewerName = entry.reviewedBy ?? ''
+    // Once a review has been confirmed, leave the checkbox checked so the
+    // reviewer can publish without re-checking. If the entry came back to
+    // draft, clear it.
+    this._reviewConfirmed = !!entry.reviewedAt && entry.status !== 'draft'
+    this._submittedForReviewAt = entry.submittedForReviewAt ?? null
+    this._reviewedAt = entry.reviewedAt ?? null
+    this._publishedAt = entry.publishedAt ?? null
   }
 
   /** Reset all right-rail metadata back to defaults (called from `_newContent`). */
@@ -1073,6 +1138,11 @@ class FFApp extends LitElement {
     this._excludeSmartBenefits = false
     this._rightTab = 'basics'
     this._highlightedField = ''
+    this._reviewerName = ''
+    this._reviewConfirmed = false
+    this._submittedForReviewAt = null
+    this._reviewedAt = null
+    this._publishedAt = null
   }
 
   /** Build a Partial<ContentEntry> patch from the current right-rail state. */
@@ -1296,14 +1366,16 @@ class FFApp extends LitElement {
 
   private _renderRightRailBody() {
     const s = this._currentStatus
-    const statusLabel = ({ draft: 'Draft', in_review: 'In review', approved: 'Approved', published: 'Published', trash: 'Trash' } as Record<string,string>)[s] ?? 'Draft'
+    const statusLabel = ({ draft: 'Draft', in_review: 'In review', approved: 'Ready to publish', published: 'Published', trash: 'Trash' } as Record<string,string>)[s] ?? 'Draft'
     const statusTone = s === 'published' ? 'bg-emerald-100 text-emerald-800'
       : s === 'approved' ? 'bg-blue-100 text-blue-800'
       : s === 'in_review' ? 'bg-amber-100 text-amber-800'
       : 'bg-gray-200 text-gray-700'
     const saveLabel = this.editingId ? (this.isDirty ? 'Save changes' : 'Saved') : 'Save as draft'
     const hasOutput = !!this.output.trim()
-    const canPublish = this._canPublish && hasOutput && !this.isGenerating
+    const readyForReview = this._canPublish && hasOutput && !this.isGenerating
+    const inReviewFlow = s === 'in_review' || s === 'approved'
+    const showReviewPanel = inReviewFlow || s === 'published'
 
     return html`
       <!-- STICKY ACTION AREA — always visible at top -->
@@ -1324,24 +1396,29 @@ class FFApp extends LitElement {
           ${saveLabel}
         </button>
 
-        <button @click=${() => this._publish()}
-          ?disabled=${!canPublish}
-          title=${canPublish ? 'Publish this' : 'Complete required items first'}
-          class="w-full px-4 py-3 rounded-lg ${canPublish ? 'bg-[#063853] hover:bg-[#04293D]' : 'bg-gray-300'} text-white text-[13px] font-semibold transition-colors flex items-center justify-center gap-2 disabled:cursor-not-allowed">
-          ${this._currentStatus === 'published' ? html`Published <span>✓</span>` : html`
-            Publish this
+        ${s === 'draft' || s === 'trash' ? html`
+          <button @click=${() => this._submitForReview()}
+            ?disabled=${!readyForReview}
+            title=${readyForReview ? 'Submit for publishing review' : 'Complete required items first'}
+            class="w-full px-4 py-3 rounded-lg ${readyForReview ? 'bg-[#063853] hover:bg-[#04293D]' : 'bg-gray-300'} text-white text-[13px] font-semibold transition-colors flex items-center justify-center gap-2 disabled:cursor-not-allowed">
+            Submit for review
             <svg width="11" height="11" viewBox="0 0 12 12" fill="none"><path d="M3 6h6m-2-3l3 3-3 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
-          `}
-        </button>
-
-        ${!hasOutput ? html`
-          <p class="text-[11px] text-gray-400 text-center">
-            ${this.creationMode === 'manual' ? 'Start writing to enable publishing.' : 'Generate or write a draft first.'}
-          </p>
-        ` : !canPublish ? html`
-          <p class="text-[11px] text-amber-700 text-center">Complete required items before publishing.</p>
+          </button>
+          ${!hasOutput ? html`
+            <p class="text-[11px] text-gray-400 text-center">
+              ${this.creationMode === 'manual' ? 'Start writing to enable review.' : 'Generate or write a draft first.'}
+            </p>
+          ` : !readyForReview ? html`
+            <p class="text-[11px] text-amber-700 text-center">Complete required items before submitting.</p>
+          ` : ''}
+        ` : s === 'published' ? html`
+          <div class="w-full px-4 py-3 rounded-lg bg-emerald-100 text-emerald-900 text-[13px] font-semibold text-center flex items-center justify-center gap-2">
+            Published <span>✓</span>
+          </div>
         ` : ''}
       </div>
+
+      ${showReviewPanel ? this._renderReviewPanel() : ''}
 
       <!-- Manual mode shows the metadata panel immediately so writers can fill
            slug / categories / SEO before they touch body copy. AI mode keeps
@@ -1365,6 +1442,127 @@ class FFApp extends LitElement {
           ${this._rightTab === 'advanced'   ? this._renderTabAdvanced()   : ''}
         </div>
       ` : ''}
+    `
+  }
+
+  /** Format a timestamp for the review trail (e.g. "Apr 30, 2026 · 3:42 PM"). */
+  private _formatReviewTimestamp(ms: number): string {
+    const d = new Date(ms)
+    const date = d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
+    const time = d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })
+    return `${date} · ${time}`
+  }
+
+  private _renderReviewPanel() {
+    const s = this._currentStatus
+    const reviewer = this._reviewerName.trim()
+    const canSaveReview = !!reviewer && this._reviewConfirmed && !this.isGenerating
+    const canPublish = canSaveReview && this._canPublish && !!this.output.trim()
+    const isPublished = s === 'published'
+    const heading = isPublished ? 'Published' : s === 'approved' ? 'Ready to publish' : 'Publishing review'
+    const subheading = isPublished
+      ? 'This content has been reviewed and published.'
+      : s === 'approved'
+        ? 'A reviewer has signed off. Publish when you’re ready.'
+        : 'A reviewer needs to confirm this is ready before it can publish.'
+
+    return html`
+      <div class="px-5 pt-4">
+        <div class="rounded-xl border ${isPublished ? 'border-emerald-200 bg-emerald-50/50' : s === 'approved' ? 'border-blue-200 bg-blue-50/40' : 'border-amber-200 bg-amber-50/40'} overflow-hidden">
+          <div class="px-4 py-3 border-b ${isPublished ? 'border-emerald-100' : s === 'approved' ? 'border-blue-100' : 'border-amber-100'} flex items-center gap-2.5">
+            <span class="flex items-center justify-center w-7 h-7 rounded-lg ${isPublished ? 'bg-emerald-100 text-emerald-700' : s === 'approved' ? 'bg-blue-100 text-blue-700' : 'bg-amber-100 text-amber-700'}">
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+                <path d="M3 8.5l3 3 6-7" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </span>
+            <div class="flex-1 min-w-0">
+              <p class="text-[12.5px] font-semibold text-[#1a1a1a] leading-tight">${heading}</p>
+              <p class="text-[11px] text-gray-600 leading-tight mt-0.5">${subheading}</p>
+            </div>
+          </div>
+
+          <div class="px-4 py-3 flex flex-col gap-3">
+            <label class="flex flex-col gap-1.5">
+              <span class="text-[10.5px] font-bold tracking-widest uppercase text-gray-500">Reviewer name</span>
+              <input
+                type="text"
+                .value=${this._reviewerName}
+                ?disabled=${isPublished}
+                @input=${(e: Event) => { this._reviewerName = (e.target as HTMLInputElement).value }}
+                placeholder="Who reviewed this?"
+                class="w-full rounded-lg border border-gray-200 px-3 py-2 text-[13px] outline-none focus:border-gray-400 bg-white disabled:bg-gray-50 disabled:text-gray-500"
+              />
+            </label>
+
+            <label class="flex items-start gap-2.5 ${isPublished ? '' : 'cursor-pointer'}">
+              <input
+                type="checkbox"
+                .checked=${this._reviewConfirmed}
+                ?disabled=${isPublished}
+                @change=${(e: Event) => { this._reviewConfirmed = (e.target as HTMLInputElement).checked }}
+                class="mt-0.5 accent-[#063853] cursor-pointer disabled:cursor-default"
+              />
+              <span class="text-[12px] text-gray-700 leading-snug">
+                I reviewed this content and confirm it is ready to publish.
+              </span>
+            </label>
+
+            ${!isPublished ? html`
+              <div class="flex flex-col gap-2 pt-1">
+                <button @click=${() => this._publish()}
+                  ?disabled=${!canPublish}
+                  title=${canPublish ? 'Publish this content' : 'Enter a reviewer name and confirm the checkbox'}
+                  class="w-full px-4 py-2.5 rounded-lg ${canPublish ? 'bg-[#063853] hover:bg-[#04293D]' : 'bg-gray-300'} text-white text-[13px] font-semibold transition-colors flex items-center justify-center gap-2 disabled:cursor-not-allowed">
+                  Publish
+                  <svg width="11" height="11" viewBox="0 0 12 12" fill="none"><path d="M3 6h6m-2-3l3 3-3 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                </button>
+                <button @click=${() => this._saveReview()}
+                  ?disabled=${!canSaveReview}
+                  title=${canSaveReview ? 'Mark this as Ready to publish without publishing yet' : 'Enter a reviewer name and confirm the checkbox'}
+                  class="w-full px-4 py-2 rounded-lg text-[12px] font-semibold border border-gray-200 bg-white hover:border-gray-300 transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
+                  Save review
+                </button>
+                ${s === 'in_review' ? html`
+                  <button @click=${() => this._cancelReview()}
+                    class="w-full px-4 py-1.5 text-[11.5px] font-semibold text-gray-500 hover:text-[#063853] transition-colors">
+                    Pull back to draft
+                  </button>
+                ` : ''}
+                ${!this._canPublish ? html`
+                  <p class="text-[11px] text-amber-700 text-center mt-1">
+                    Complete the required fields below before publishing.
+                  </p>
+                ` : ''}
+              </div>
+            ` : ''}
+
+            ${this._submittedForReviewAt || this._reviewedAt || this._publishedAt ? html`
+              <div class="border-t border-gray-200/70 pt-2.5 mt-1 flex flex-col gap-1 text-[11px] text-gray-600">
+                ${this._submittedForReviewAt ? html`
+                  <div class="flex items-center justify-between gap-2">
+                    <span class="text-gray-400">Submitted</span>
+                    <span class="font-medium text-gray-700">${this._formatReviewTimestamp(this._submittedForReviewAt)}</span>
+                  </div>
+                ` : ''}
+                ${this._reviewedAt ? html`
+                  <div class="flex items-center justify-between gap-2">
+                    <span class="text-gray-400">Reviewed</span>
+                    <span class="font-medium text-gray-700">
+                      ${(reviewer || this._reviewerName || '—')} · ${this._formatReviewTimestamp(this._reviewedAt)}
+                    </span>
+                  </div>
+                ` : ''}
+                ${this._publishedAt ? html`
+                  <div class="flex items-center justify-between gap-2">
+                    <span class="text-gray-400">Published</span>
+                    <span class="font-medium text-gray-700">${this._formatReviewTimestamp(this._publishedAt)}</span>
+                  </div>
+                ` : ''}
+              </div>
+            ` : ''}
+          </div>
+        </div>
+      </div>
     `
   }
 

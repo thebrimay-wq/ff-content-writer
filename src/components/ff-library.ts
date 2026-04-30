@@ -23,7 +23,7 @@ const STATUS_PILL: Record<ContentStatus, string> = {
 const STATUS_LABELS: Record<ContentStatus, string> = {
   draft:     'Draft',
   in_review: 'In Review',
-  approved:  'Approved',
+  approved:  'Ready to Publish',
   published: 'Published',
   trash:     'Trash',
 }
@@ -170,13 +170,101 @@ export class FFLibrary extends LitElement {
     }
   }
 
+  private _typeLabel(e: ContentEntry): string {
+    const rt = e.contentType === 'coach_insight' ? 'expert_insight' : e.contentType
+    return (TYPE_LABELS as Record<string, string>)[rt] ?? rt
+  }
+
+  private _formatRelative(ms: number | null): string {
+    if (!ms) return '—'
+    const diff = Date.now() - ms
+    const mins = Math.round(diff / 60000)
+    if (mins < 1) return 'just now'
+    if (mins < 60) return `${mins} min ago`
+    const hours = Math.round(mins / 60)
+    if (hours < 24) return `${hours} hr ago`
+    const days = Math.round(hours / 24)
+    if (days < 30) return `${days} day${days === 1 ? '' : 's'} ago`
+    return this._formatDate(ms)
+  }
+
+  private _renderPendingReview() {
+    const pending = this.entries
+      .filter(e => e.status === 'in_review')
+      .sort((a, b) => (b.submittedForReviewAt ?? b.updatedAt) - (a.submittedForReviewAt ?? a.updatedAt))
+    if (pending.length === 0) return ''
+    return html`
+      <section class="mx-8 my-5 rounded-xl border border-amber-200 bg-gradient-to-br from-amber-50/80 to-white shadow-sm overflow-hidden">
+        <header class="flex items-center justify-between px-5 py-3.5 border-b border-amber-100/80 bg-amber-50/50">
+          <div class="flex items-center gap-3">
+            <span class="flex items-center justify-center w-8 h-8 rounded-lg bg-amber-100 text-amber-700">
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                <path d="M8 5v3.5l2 1.5M14 8a6 6 0 11-12 0 6 6 0 0112 0z" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </span>
+            <div>
+              <h2 class="text-[14px] font-semibold text-[#1a1a1a] leading-tight">Pending publishing review</h2>
+              <p class="text-[11.5px] text-amber-800/80 leading-tight mt-0.5">
+                ${pending.length} item${pending.length === 1 ? '' : 's'} pending review · ready when a reviewer signs off
+              </p>
+            </div>
+          </div>
+          <button
+            @click=${() => { this._statusFilter = 'in_review'; this._view = 'all' }}
+            class="text-[11.5px] font-semibold text-amber-900 hover:text-amber-700 underline-offset-2 hover:underline"
+          >View all</button>
+        </header>
+        <ul class="divide-y divide-amber-100/60">
+          ${pending.slice(0, 5).map(e => html`
+            <li class="grid grid-cols-[minmax(0,2.4fr)_minmax(0,1fr)_minmax(0,1.2fr)_minmax(0,1.2fr)_auto] items-center gap-4 px-5 py-3 hover:bg-amber-50/40 transition-colors">
+              <div class="min-w-0">
+                <button
+                  @click=${() => this._emit('open-entry', e)}
+                  class="block w-full text-left text-[13.5px] font-semibold text-gray-900 hover:text-[#063853] truncate"
+                  title=${e.title}
+                >${e.title}</button>
+                <p class="text-[11px] text-gray-500 mt-0.5 truncate">${this._typeLabel(e)}</p>
+              </div>
+              <div class="text-[12px] text-gray-600 truncate" title=${e.author || '—'}>
+                <span class="text-gray-400">By</span> ${e.author || '—'}
+              </div>
+              <div class="text-[12px] text-gray-500" title=${e.submittedForReviewAt ? new Date(e.submittedForReviewAt).toLocaleString() : ''}>
+                <span class="text-gray-400">Submitted</span> ${this._formatRelative(e.submittedForReviewAt ?? e.updatedAt)}
+              </div>
+              <div>
+                <span class="inline-flex items-center gap-1.5 text-[10.5px] font-semibold px-2 py-1 rounded-full bg-amber-100 text-amber-800">
+                  <span class="h-1.5 w-1.5 rounded-full bg-amber-500"></span>
+                  Needs review
+                </span>
+              </div>
+              <div class="flex items-center justify-end">
+                <button
+                  @click=${() => this._emit('open-entry', e)}
+                  class="text-[12px] font-semibold text-white bg-[#063853] hover:bg-[#04293D] px-3 py-1.5 rounded-md transition-colors"
+                >Review</button>
+              </div>
+            </li>
+          `)}
+        </ul>
+        ${pending.length > 5 ? html`
+          <div class="px-5 py-2.5 border-t border-amber-100/60 bg-amber-50/40 text-center">
+            <button
+              @click=${() => { this._statusFilter = 'in_review'; this._view = 'all' }}
+              class="text-[11.5px] font-semibold text-amber-900 hover:text-amber-700"
+            >View all ${pending.length} pending items</button>
+          </div>
+        ` : ''}
+      </section>
+    `
+  }
+
   private _renderStatusChips() {
     const counts = this._counts
     const chips: Array<{ key: 'all' | ContentStatus; label: string }> = [
       { key: 'all', label: 'All' },
       { key: 'draft', label: 'Draft' },
       { key: 'in_review', label: 'In Review' },
-      { key: 'approved', label: 'Approved' },
+      { key: 'approved', label: 'Ready to Publish' },
       { key: 'published', label: 'Published' },
       { key: 'trash', label: 'Trash' },
     ]
@@ -308,7 +396,7 @@ export class FFLibrary extends LitElement {
               </button>
               <button @click=${() => this._bulkStatus('approved')}
                 class="text-[11px] font-semibold px-2.5 py-1 rounded bg-white/10 hover:bg-white/20 transition-colors">
-                Approve
+                Mark Ready to Publish
               </button>
               <button @click=${() => this._bulkStatus('draft')}
                 class="text-[11px] font-semibold px-2.5 py-1 rounded bg-white/10 hover:bg-white/20 transition-colors">
@@ -328,6 +416,7 @@ export class FFLibrary extends LitElement {
 
         <!-- List -->
         <div class="flex-1 overflow-y-auto scrollbar-thin">
+          ${this._renderPendingReview()}
           ${this._statusFilter === 'trash' && filtered.length > 0 ? html`
             <div class="px-8 py-2 bg-red-50 border-b border-red-100 text-[11px] text-red-700">
               Trash empties automatically after 30 days.
