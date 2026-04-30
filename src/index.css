@@ -175,4 +175,4 @@ mark.ff-highlight, .ff-highlight {
   55%  { opacity: 1; transform: translateY(0) scale(1.04); }
   100% { opacity: 1; transform: translateY(0) scale(1); }
 }
-.ff-cameo-pop { animation: ffcameo-pop 0.4s cubic-bezier(.4, .8, .5, 1) both; transform-origin: bottom left; }
+.ff-cameo-pop { animation: ffcameo-pop 0.4s cubic-bezier(.4, .8, .5, 1) both; transform-origin: bottom right; }
