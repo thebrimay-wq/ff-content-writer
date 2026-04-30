@@ -2174,7 +2174,7 @@ class FFApp extends LitElement {
     return html`
       <div class="fixed bottom-4 left-4 z-50 ff-fade-in flex flex-col items-start gap-2 pointer-events-none">
         ${this._cameoBubbleOpen ? html`
-          <div class="ff-greeting bg-white rounded-2xl shadow-xl border border-gray-200 px-4 py-3 max-w-[260px] pointer-events-auto">
+          <div class="ff-cameo-pop bg-white rounded-2xl shadow-xl border border-gray-200 px-4 py-3 max-w-[260px] pointer-events-auto">
             <p class="text-[11px] font-semibold tracking-wide text-gray-500 mb-1">${firstName} says</p>
             <p class="text-[14px] text-[#1a1a1a] leading-snug">"${FFApp._COACH_WISDOM[this._cameoQuoteIdx]}"</p>
             <p class="text-[10px] text-gray-300 mt-1.5">tap for another</p>

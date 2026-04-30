@@ -161,10 +161,18 @@ mark.ff-highlight, .ff-highlight {
 }
 .ff-wiggle { animation: ffwiggle 0.55s ease-in-out 1; }
 
-/* ── Konami: greeting bubble pop ────────────────────────────────────────── */
+/* ── Konami: greeting bubble pop (centered pill) ────────────────────────── */
 @keyframes ffgreeting-pop {
   0%   { opacity: 0; transform: translate(-50%, -8px) scale(0.92); }
   55%  { opacity: 1; transform: translate(-50%, 0) scale(1.05); }
   100% { opacity: 1; transform: translate(-50%, 0) scale(1); }
 }
 .ff-greeting { animation: ffgreeting-pop 0.45s cubic-bezier(.4, .8, .5, 1) both; }
+
+/* ── Coach cameo bubble pop (anchored, no horizontal translate) ─────────── */
+@keyframes ffcameo-pop {
+  0%   { opacity: 0; transform: translateY(8px) scale(0.92); }
+  55%  { opacity: 1; transform: translateY(0) scale(1.04); }
+  100% { opacity: 1; transform: translateY(0) scale(1); }
+}
+.ff-cameo-pop { animation: ffcameo-pop 0.4s cubic-bezier(.4, .8, .5, 1) both; transform-origin: bottom left; }
