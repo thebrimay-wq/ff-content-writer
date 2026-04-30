@@ -13,6 +13,14 @@ export interface ContentSource {
   note: string
 }
 
+/** Reference to another library entry, used for "Related resources" cross-linking. */
+export interface RelatedResourceRef {
+  id: string
+  title: string
+  contentType: string
+  slug: string
+}
+
 export interface ContentEntry {
   id: string
   title: string
@@ -53,6 +61,7 @@ export interface ContentEntry {
   seoArticle: string            // long-form Context article, independent of `output`
   seoSourceOutput: string       // snapshot of `output` when `seoArticle` was last generated — drives "stale" detection
   sources: ContentSource[]      // references/citations for this piece
+  relatedResources: RelatedResourceRef[]  // curated cross-links to other library entries (only used by article/expert_insight/infographic/user_story)
   // Workflow
   assignee: string              // name/email of reviewer — drives "My queue"
   reviewNotes: string           // most recent review message; shown as banner when in_review
@@ -151,6 +160,7 @@ function migrate(raw: Record<string, unknown>): ContentEntry {
     seoArticle: (raw.seoArticle as string) ?? '',
     seoSourceOutput: (raw.seoSourceOutput as string) ?? '',
     sources: Array.isArray(raw.sources) ? (raw.sources as ContentSource[]) : [],
+    relatedResources: Array.isArray(raw.relatedResources) ? (raw.relatedResources as RelatedResourceRef[]) : [],
     assignee: (raw.assignee as string) ?? '',
     reviewNotes: (raw.reviewNotes as string) ?? '',
     deletedAt: typeof raw.deletedAt === 'number' ? raw.deletedAt : null,
@@ -227,6 +237,7 @@ const ENTRY_DEFAULTS: Omit<ContentEntry, 'id' | 'title' | 'contentType' | 'audie
   seoArticle: '',
   seoSourceOutput: '',
   sources: [],
+  relatedResources: [],
   assignee: '',
   reviewNotes: '',
   deletedAt: null,

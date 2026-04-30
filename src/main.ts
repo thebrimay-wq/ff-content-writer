@@ -48,7 +48,7 @@ import {
   type ContentEntry,
   type ContentStatus,
 } from './lib/store'
-import type { ContentSource } from './lib/store'
+import type { ContentSource, RelatedResourceRef } from './lib/store'
 import { loadArticles, getCategoryGroups } from './lib/articles'
 import { CURATED_CATEGORIES } from './lib/taxonomy'
 import './components/ff-library'
@@ -709,6 +709,8 @@ class FFApp extends LitElement {
   @state() private _categories: string[] = []
   @state() private _seoArticle = ''                   // long-form copy fed to the AI as source material
   @state() private _sources: ContentSource[] = []     // citations / references for this piece
+  @state() private _relatedResources: RelatedResourceRef[] = []  // curated cross-links to other library entries
+  @state() private _relatedSearch = ''                 // search filter for the Related resources picker
   @state() private _sourcesLoading = false             // background sources extraction in flight
   @state() private _seoLoading = false                 // background long-form expansion in flight
   @state() private _excerptLoading = false              // background one-sentence summary in flight
@@ -756,6 +758,8 @@ class FFApp extends LitElement {
     this._categories = entry.categories ?? []
     this._seoArticle = entry.seoArticle ?? ''
     this._sources = entry.sources ?? []
+    this._relatedResources = entry.relatedResources ?? []
+    this._relatedSearch = ''
     this._author = entry.author ?? ''
     this._client = entry.client ?? ''
     this._curatedCategories = entry.curatedCategories ?? []
@@ -794,6 +798,8 @@ class FFApp extends LitElement {
     this._categories = []
     this._seoArticle = ''
     this._sources = []
+    this._relatedResources = []
+    this._relatedSearch = ''
     this._author = ''
     this._client = ''
     this._curatedCategories = []
@@ -823,6 +829,7 @@ class FFApp extends LitElement {
       categories: this._categories,
       seoArticle: this._seoArticle,
       sources: this._sources,
+      relatedResources: this._relatedResources,
       author: this._author,
       client: this._client,
       curatedCategories: this._curatedCategories,
@@ -935,6 +942,55 @@ class FFApp extends LitElement {
     if (kind === 'tags') this._tags = this._tags.filter(t => t !== tag)
     else this._internalTags = this._internalTags.filter(t => t !== tag)
     this.isDirty = true
+  }
+
+  // ── Related resources ─────────────────────────────────────────────────────
+  // Only article / expert_insight / infographic / user_story support related
+  // resources. The picker reads from the live library + CMS-imported articles
+  // and ranks suggestions by how many categories they share with the current
+  // entry — instant, offline, no AI call.
+  private static readonly _RELATED_ELIGIBLE = new Set(['article', 'expert_insight', 'infographic', 'user_story'])
+  private get _supportsRelated(): boolean {
+    return FFApp._RELATED_ELIGIBLE.has(this.contentType)
+  }
+
+  private _addRelated(ref: RelatedResourceRef) {
+    if (this._relatedResources.some(r => r.id === ref.id)) return
+    this._relatedResources = [...this._relatedResources, ref]
+    this.isDirty = true
+  }
+
+  private _removeRelated(id: string) {
+    this._relatedResources = this._relatedResources.filter(r => r.id !== id)
+    this.isDirty = true
+  }
+
+  /** Build a ranked list of suggested related resources from the current library.
+   *  Score = number of shared categories. Excludes the entry being edited and
+   *  anything already selected. Falls back to recency when nothing matches. */
+  private _suggestedRelated(): Array<RelatedResourceRef & { score: number }> {
+    const myCats = new Set(this._categories.map(c => c.toLowerCase()))
+    const myTopic = (this._getTitle() || this.topic).toLowerCase()
+    const myTopicTerms = new Set(myTopic.split(/\s+/).filter(w => w.length > 3))
+    const selected = new Set(this._relatedResources.map(r => r.id))
+    const me = this.editingId ?? ''
+
+    // Pull from both user library + CMS-imported articles for a unified pool.
+    const pool: ContentEntry[] = [...loadAll(), ...loadArticles()]
+    const seen = new Set<string>()
+
+    return pool
+      .filter(e => e.id !== me && !selected.has(e.id) && !seen.has(e.id) && (seen.add(e.id), true))
+      .map(e => {
+        const eCats = new Set((e.categories ?? []).map(c => c.toLowerCase()))
+        let score = 0
+        for (const c of myCats) if (eCats.has(c)) score += 3
+        const title = (e.title ?? '').toLowerCase()
+        for (const w of myTopicTerms) if (title.includes(w)) score += 1
+        return { id: e.id, title: e.title || '(untitled)', contentType: e.contentType, slug: e.slug ?? '', score }
+      })
+      .sort((a, b) => b.score - a.score || a.title.localeCompare(b.title))
+      .slice(0, 12)
   }
 
   /** Toggle a category path on/off. Path uses "Parent/Child" format. */
@@ -1201,6 +1257,65 @@ class FFApp extends LitElement {
             </select>
           </div>
         </div>
+
+        ${this._supportsRelated ? this._renderRelatedResourcesPicker() : ''}
+      </div>
+    `
+  }
+
+  // ── Related resources picker ─────────────────────────────────────────────
+  private _renderRelatedResourcesPicker() {
+    const search = this._relatedSearch.trim().toLowerCase()
+    const suggestions = this._suggestedRelated()
+    const filtered = search
+      ? suggestions.filter(s => s.title.toLowerCase().includes(search) || s.contentType.toLowerCase().includes(search))
+      : suggestions
+    const typeLabel = (t: string) => V2_TYPE_LABELS[t] ?? t
+    return html`
+      <div class="flex flex-col gap-2 pt-3 border-t border-gray-100">
+        <div class="flex items-center justify-between">
+          <p class="text-[11px] font-semibold text-gray-700">Related resources</p>
+          <span class="text-[11px] text-gray-400">${this._relatedResources.length} selected</span>
+        </div>
+        <p class="text-[11px] text-gray-500 leading-snug">Cross-link to other library entries readers might want next. Suggestions below are ranked by shared categories with this draft.</p>
+
+        ${this._relatedResources.length ? html`
+          <div class="flex flex-col gap-1.5">
+            ${this._relatedResources.map(r => html`
+              <div class="rounded-md border border-gray-200 bg-white px-2.5 py-1.5 flex items-center gap-2 group/rel">
+                <div class="flex-1 min-w-0">
+                  <p class="text-[12px] font-semibold text-gray-800 truncate">${r.title}</p>
+                  <p class="text-[10px] text-gray-400 uppercase tracking-wide">${typeLabel(r.contentType)}</p>
+                </div>
+                <button @click=${() => this._removeRelated(r.id)}
+                  class="opacity-0 group-hover/rel:opacity-100 text-gray-300 hover:text-red-500 text-[14px] leading-none px-1 transition-opacity" title="Remove">×</button>
+              </div>
+            `)}
+          </div>
+        ` : ''}
+
+        <input type="text" .value=${this._relatedSearch}
+          @input=${(e: Event) => { this._relatedSearch = (e.target as HTMLInputElement).value }}
+          placeholder="Search the library…"
+          class="w-full rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-[12px] outline-none focus:border-gray-400" />
+
+        ${filtered.length === 0 ? html`
+          <p class="text-[11px] text-gray-400 italic px-1 py-2">No matches</p>
+        ` : html`
+          <div class="flex flex-col gap-1 max-h-56 overflow-y-auto pr-1 scrollbar-thin">
+            ${!search ? html`<p class="text-[10px] text-gray-400 uppercase tracking-wide font-semibold pt-1">Suggested for you</p>` : ''}
+            ${filtered.map(s => html`
+              <button @click=${() => this._addRelated({ id: s.id, title: s.title, contentType: s.contentType, slug: s.slug })}
+                class="rounded-md border border-gray-200 bg-white hover:border-[#063853] hover:bg-[#063853]/5 transition-colors px-2.5 py-1.5 text-left flex items-center gap-2">
+                <div class="flex-1 min-w-0">
+                  <p class="text-[12px] text-gray-800 truncate">${s.title}</p>
+                  <p class="text-[10px] text-gray-400 uppercase tracking-wide">${typeLabel(s.contentType)}${s.score > 0 ? html` · ${s.score} match${s.score === 1 ? '' : 'es'}` : ''}</p>
+                </div>
+                <span class="text-[16px] text-gray-300 leading-none shrink-0">+</span>
+              </button>
+            `)}
+          </div>
+        `}
       </div>
     `
   }

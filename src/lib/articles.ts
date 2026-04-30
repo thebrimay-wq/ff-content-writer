@@ -416,6 +416,7 @@ function normalizeArticle(raw: RawArticle): ContentEntry {
     seoArticle: '',
     seoSourceOutput: '',
     sources: [],
+    relatedResources: [],
     assignee: '',
     reviewNotes: '',
     deletedAt: null,
