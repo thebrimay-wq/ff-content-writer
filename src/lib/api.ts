@@ -39,6 +39,17 @@ export interface GenerateRequest {
   topic: string
   notes: string
   expertSources?: ExpertSource[]
+  /** Long-form source material the AI should draw from (pasted by the writer). */
+  seoArticle?: string
+}
+
+// Long-form source can be huge; cap before stuffing into a prompt so we don't
+// blow past max_tokens. ~12k chars ≈ ~3k tokens of reference material.
+const MAX_SEO_ARTICLE_CHARS = 12000
+function clipSeoArticle(s?: string): string {
+  const t = (s ?? '').trim()
+  if (!t) return ''
+  return t.length > MAX_SEO_ARTICLE_CHARS ? t.slice(0, MAX_SEO_ARTICLE_CHARS) + '\n…[truncated]' : t
 }
 
 export interface Message {
@@ -94,6 +105,15 @@ export function buildUserMessage(req: GenerateRequest): string {
     parts.push(``, `Notes:`, req.notes.trim())
   }
 
+  const seo = clipSeoArticle(req.seoArticle)
+  if (seo) {
+    parts.push(
+      ``,
+      `Reference / source material (writer-provided long-form copy — draw facts, framing, and structure from this; do not copy verbatim):`,
+      seo,
+    )
+  }
+
   const instructions = [
     ``,
     `Instructions:`,
@@ -111,6 +131,11 @@ export function buildUserMessage(req: GenerateRequest): string {
       `- Preserve each expert's core meaning, voice, and expertise — do not invent new claims`,
     )
   }
+  if (seo) {
+    instructions.push(
+      `- Treat the reference / source material above as the primary factual basis. Stay consistent with its claims and figures; rephrase, do not copy.`,
+    )
+  }
 
   parts.push(...instructions)
 
@@ -124,8 +149,9 @@ export function buildRefinementMessage(
 ): string {
   const typeLabel = TYPE_LABELS[ctx.contentType] ?? ctx.contentType
   const audienceLabel = AUDIENCE_LABELS[ctx.audience] ?? ctx.audience
+  const seo = clipSeoArticle(ctx.seoArticle)
 
-  return [
+  const lines = [
     `Refine this Financial Finesse content.`,
     ``,
     `Content type: ${typeLabel}`,
@@ -136,6 +162,17 @@ export function buildRefinementMessage(
     ``,
     `Refinement request:`,
     instruction.trim(),
+  ]
+
+  if (seo) {
+    lines.push(
+      ``,
+      `Reference / source material (writer-provided — stay consistent with these facts):`,
+      seo,
+    )
+  }
+
+  lines.push(
     ``,
     `Instructions:`,
     `- Modify the current draft`,
@@ -145,7 +182,9 @@ export function buildRefinementMessage(
     `- Keep it human and compliant`,
     `- CRITICAL: preserve all custom HTML tags exactly — never remove or rewrite tags starting with <snippet or ending with -card`,
     `- [PRESERVE_CUSTOM_TAG:N] placeholders represent protected tags — reproduce each one verbatim in the same position`,
-  ].join('\n')
+  )
+
+  return lines.join('\n')
 }
 
 export function buildSourcesMessage(ctx: GenerateRequest, draft: string): string {
@@ -242,6 +281,15 @@ export function buildJsonUserMessage(req: GenerateRequest): string {
 
   if (req.notes.trim()) parts.push(``, `Additional notes:`, req.notes.trim())
 
+  const seo = clipSeoArticle(req.seoArticle)
+  if (seo) {
+    parts.push(
+      ``,
+      `Reference / source material (writer-provided long-form copy — primary factual basis; rephrase, do not copy verbatim):`,
+      seo,
+    )
+  }
+
   parts.push(
     ``,
     `Return ONLY a valid JSON object matching the schema for this content type. No markdown, no code fences, no commentary.`,
@@ -259,7 +307,8 @@ export function buildJsonRefinementMessage(
 ): string {
   const typeLabel = TYPE_LABELS[ctx.contentType] ?? ctx.contentType
   const audienceLabel = AUDIENCE_LABELS[ctx.audience] ?? ctx.audience
-  return [
+  const seo = clipSeoArticle(ctx.seoArticle)
+  const lines = [
     `Refine this Financial Finesse Hub structured content JSON.`,
     ``,
     `Content type: ${typeLabel}`,
@@ -269,9 +318,19 @@ export function buildJsonRefinementMessage(
     currentJson,
     ``,
     `Instruction: ${instruction.trim()}`,
+  ]
+  if (seo) {
+    lines.push(
+      ``,
+      `Reference / source material (writer-provided — stay consistent with these facts):`,
+      seo,
+    )
+  }
+  lines.push(
     ``,
     `Return ONLY valid JSON with the same structure and all the same fields. Apply the instruction to improve the content text. No markdown, no code fences, no commentary.`,
-  ].join('\n')
+  )
+  return lines.join('\n')
 }
 
 export async function streamMessage(

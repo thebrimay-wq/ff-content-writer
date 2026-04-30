@@ -13,6 +13,7 @@ import {
   buildJsonUserMessage,
   buildRefinementMessage,
   buildJsonRefinementMessage,
+  buildSourcesMessage,
   streamMessage,
   AUDIENCE_LABELS,
   type GenerateRequest,
@@ -369,6 +370,7 @@ class FFApp extends LitElement {
       topic: this.topic,
       notes: this.notes,
       expertSources: this.expertSources,
+      seoArticle: this._seoArticle,
     }
     this.lastRequest = req
 
@@ -393,6 +395,9 @@ class FFApp extends LitElement {
         controller.signal,
         useJson ? 8192 : 2048,
       )
+      // Fire-and-forget sources extraction — runs after main draft, never blocks
+      // the generate UX. Skipped if user has already curated sources.
+      void this._autoExtractSources(req)
     } catch (err) {
       if (!(err instanceof Error && err.name === 'AbortError')) {
         this.error = err instanceof Error ? err.message : 'Something went wrong.'
@@ -402,15 +407,58 @@ class FFApp extends LitElement {
     }
   }
 
+  /**
+   * After the main draft streams in, ask the model for a JSON list of sources
+   * grounded in the draft. Replaces `_sources` only if the writer hasn't filled
+   * any rows in by hand. Silently no-ops on failure — sources are nice-to-have.
+   */
+  private async _autoExtractSources(ctx: GenerateRequest) {
+    if (!this.apiKey || !this.output.trim()) return
+    const hasUserSources = this._sources.some(s => s.title.trim() || s.url.trim() || s.note.trim())
+    if (hasUserSources) return
+    this._sourcesLoading = true
+    try {
+      const draft = this.contentType === 'article' ? stripPublishingSections(this.output) : this.output
+      const msg = buildSourcesMessage(ctx, draft)
+      let raw = ''
+      const controller = new AbortController()
+      await streamMessage(
+        this.apiKey,
+        [{ role: 'user', content: msg }],
+        'You return only the requested JSON. No prose, no code fences.',
+        (chunk) => { raw += chunk },
+        controller.signal,
+        1024,
+      )
+      // Pull the first JSON array out of the response (handles stray prose).
+      const start = raw.indexOf('[')
+      const end = raw.lastIndexOf(']')
+      if (start === -1 || end === -1 || end <= start) return
+      const parsed = JSON.parse(raw.slice(start, end + 1)) as Array<{ title?: string; url?: string; note?: string }>
+      if (!Array.isArray(parsed) || parsed.length === 0) return
+      this._sources = parsed
+        .filter(s => s && (s.title || s.url || s.note))
+        .map(s => ({ title: (s.title ?? '').trim(), url: (s.url ?? '').trim(), note: (s.note ?? '').trim() }))
+      this.isDirty = true
+    } catch {
+      // Sources are optional — don't surface errors here.
+    } finally {
+      this._sourcesLoading = false
+    }
+  }
+
   private async _refine(instruction: string) {
     if (!this.output.trim() || !this.apiKey) return
-    const ctx = this.lastRequest ?? {
-      contentType: this.contentType,
-      audience: this.audience,
-      topic: this.topic,
-      notes: this.notes,
-      expertSources: this.expertSources,
-    }
+    const ctx: GenerateRequest = this.lastRequest
+      ? { ...this.lastRequest, seoArticle: this._seoArticle }
+      : {
+          contentType: this.contentType,
+          audience: this.audience,
+          topic: this.topic,
+          notes: this.notes,
+          expertSources: this.expertSources,
+          seoArticle: this._seoArticle,
+        }
     const useJson = this.contentType !== 'article'
     const msg = useJson
       ? buildJsonRefinementMessage(this.output, instruction, ctx)
@@ -515,6 +563,7 @@ class FFApp extends LitElement {
   @state() private _categories: string[] = []
   @state() private _seoArticle = ''                   // long-form copy fed to the AI as source material
   @state() private _sources: ContentSource[] = []     // citations / references for this piece
+  @state() private _sourcesLoading = false             // background sources extraction in flight
 
   // Advanced fields — collapsed behind a disclosure by default.
   @state() private _author = ''
@@ -876,18 +925,31 @@ class FFApp extends LitElement {
       { id: 'advanced',   label: 'Advanced' },
     ]
     return html`
-      <div class="px-5 pt-4 border-b border-gray-200">
-        <div class="flex flex-wrap gap-x-1 -mb-px">
-          ${tabs.map(t => {
-            const active = this._rightTab === t.id
-            return html`
-              <button @click=${() => { this._rightTab = t.id; this._highlightedField = '' }}
-                class="${active ? 'border-[#063853] text-[#063853]' : 'border-transparent text-gray-500 hover:text-gray-700'} pb-2 px-1.5 text-[11.5px] font-semibold border-b-2 transition-colors flex items-center gap-1.5 whitespace-nowrap">
-                ${t.label}
-                ${t.missing ? html`<span class="px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-800 text-[9.5px] font-bold leading-none">${t.missing}</span>` : ''}
-              </button>
-            `
-          })}
+      <div class="px-5 pt-5 mt-2 border-t border-gray-100">
+        <div class="relative -mx-5">
+          <div role="tablist"
+            class="flex flex-nowrap gap-2 overflow-x-auto scrollbar-none scroll-smooth px-5 pb-2">
+            ${tabs.map(t => {
+              const active = this._rightTab === t.id
+              return html`
+                <button role="tab"
+                  aria-selected=${active}
+                  @click=${() => { this._rightTab = t.id; this._highlightedField = '' }}
+                  class="${active
+                    ? 'bg-[#063853] text-white shadow-sm'
+                    : 'bg-white text-gray-600 border border-gray-200 hover:text-gray-900 hover:border-gray-300 hover:bg-gray-50'}
+                    shrink-0 inline-flex items-center gap-2 px-4 min-h-[40px] rounded-full text-[12.5px] font-semibold whitespace-nowrap transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-[#063853]/40">
+                  <span>${t.label}</span>
+                  ${t.missing ? html`
+                    <span class="${active ? 'bg-white/20 text-white' : 'bg-amber-100 text-amber-800'}
+                      inline-flex items-center justify-center min-w-[20px] h-[20px] px-1.5 rounded-full text-[10.5px] font-bold leading-none">${t.missing}</span>
+                  ` : ''}
+                </button>
+              `
+            })}
+          </div>
+          <!-- Right-edge fade hint that more tabs are scrollable. Sits above pb-2 padding. -->
+          <div class="pointer-events-none absolute top-0 bottom-2 right-0 w-8 bg-gradient-to-l from-gray-50 to-transparent"></div>
         </div>
       </div>
     `
@@ -1130,11 +1192,22 @@ class FFApp extends LitElement {
             </div>
           ` : html`
             <div class="rounded-md border border-dashed border-gray-300 p-3 flex flex-col gap-1.5 ${fld('featuredImage')}">
+              <label class="cursor-pointer rounded-md bg-gray-50 hover:bg-gray-100 transition-colors px-3 py-2 text-center border border-gray-200 block">
+                <p class="text-[12px] text-gray-700 font-semibold">Click to upload</p>
+                <p class="text-[10.5px] text-gray-400">PNG, JPG, SVG</p>
+                <input type="file" accept="image/*" class="hidden"
+                  @change=${(e: Event) => {
+                    const f = (e.target as HTMLInputElement).files?.[0]
+                    if (!f) return
+                    const reader = new FileReader()
+                    reader.onload = (ev) => { this._featuredImage = (ev.target?.result as string) ?? ''; this.isDirty = true }
+                    reader.readAsDataURL(f)
+                  }} />
+              </label>
               <input type="url" .value=${this._featuredImage}
                 @input=${(e: Event) => { this._featuredImage = (e.target as HTMLInputElement).value; this.isDirty = true }}
-                placeholder="Paste an image URL"
+                placeholder="…or paste an image URL"
                 class="w-full rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-[12px] outline-none focus:border-gray-400" />
-              <p class="text-[10.5px] text-gray-400 text-center">Or upload via the canvas image button.</p>
             </div>
           `}
         </div>
@@ -1165,11 +1238,11 @@ class FFApp extends LitElement {
                 class="text-[10.5px] text-[#063853] font-semibold hover:underline">Copy</button>
             ` : ''}
           </div>
-          <p class="text-[11px] text-gray-500 leading-snug">Auto-generated from the AI draft to support deeper context. You can also paste a long-form article here for the AI to draw from.</p>
+          <p class="text-[11px] text-gray-500 leading-snug">Paste a long-form article, brief, or research notes here. When set, the AI uses it as the primary factual basis for generation and refinement.</p>
           <textarea .value=${this._seoArticle}
             @input=${(e: Event) => { this._seoArticle = (e.target as HTMLTextAreaElement).value; this.isDirty = true }}
             rows="8"
-            placeholder="Auto-populates after generation. You can paste your own."
+            placeholder="Paste source material the AI should draw from."
             class="w-full rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-[11.5px] leading-relaxed outline-none focus:border-gray-400 resize-y font-mono"></textarea>
           ${this._seoArticle ? html`<p class="text-[10.5px] text-gray-400 text-right">${this._seoArticle.length.toLocaleString()} characters</p>` : ''}
         </div>
@@ -1180,8 +1253,12 @@ class FFApp extends LitElement {
             <button @click=${() => this._addSource()}
               class="text-[11px] text-[#063853] hover:underline font-semibold">+ Add</button>
           </div>
-          <p class="text-[11px] text-gray-500 leading-snug">Auto-populated from AI generation sources. Edit or add your own.</p>
-          ${this._sources.length === 0 ? html`
+          <p class="text-[11px] text-gray-500 leading-snug">Auto-populated after AI generation. Edit or add your own.</p>
+          ${this._sourcesLoading ? html`
+            <div class="rounded-md border border-dashed border-gray-200 px-3 py-3 text-center">
+              <p class="text-[11px] text-gray-400">Extracting sources from draft…</p>
+            </div>
+          ` : this._sources.length === 0 ? html`
             <div class="rounded-md border border-dashed border-gray-200 px-3 py-3 text-center">
               <p class="text-[11px] text-gray-400">No sources yet</p>
             </div>

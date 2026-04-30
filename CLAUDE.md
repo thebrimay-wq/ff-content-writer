@@ -44,7 +44,16 @@
 - The custom element tag is `<ff-app>` (not `<ff-content-writer>`). The component opts out of shadow DOM via `createRenderRoot() { return this }`, so light-DOM queries work.
 - The center pane is a **single unified surface that is both Preview AND Editor**. There are no separate Preview / Edit tabs. Click any field → edit it inline.
 - The toolbar's `</>` button toggles a read-only HTML/Markdown/JSON source view (admin-only intent).
-- The right rail holds: Status pill → Save → Publish → Slug → Excerpt → Categories → Long-form source → Sources → Advanced.
+- The right rail is a **tabbed publishing panel**:
+  - **Sticky action area** at the top — Status pill, "Save changes" / "Save as draft", and "Publish this" (disabled via `_canPublish` until every readiness check passes).
+  - **Publish Readiness card** below the actions — green "Ready to publish" when `_canPublish`, otherwise an amber checklist of missing items. Each missing item is a button that calls `_gotoField(tab, key)` to switch tabs, scroll to `[data-field=key]`, and pulse it via the `ff-field-pulse` class.
+  - **5 tabs** rendered by `_renderRightTabs` — Basics / Categories / SEO / AI Context / Advanced. The first three carry amber missing-count badges driven by `_readinessChecks()`.
+  - **Basics**: title (bidirectionally synced with the canvas H1 / JSON `title` via `_getTitle` / `_setTitle`), slug, excerpt, status, region, language.
+  - **Categories**: real CMS taxonomy + curated categories.
+  - **SEO**: `metaDescription` (160-char limit), `featuredImage` (file upload + URL paste fallback), public `tags`.
+  - **AI Context**: `seoArticle` (long-form source — fed to `buildUserMessage` / `buildJsonUserMessage` and refinement builders as primary factual basis) and `sources` (auto-extracted post-generate via `buildSourcesMessage`; only overwrites when the writer hasn't filled any rows). `_sourcesLoading` flags the in-flight extraction.
+  - **Advanced**: author, client, internal tags, redirect, priority, exclude clients, mime type, paid content, legacy id, exclude smart benefits.
+- New schema fields on `ContentEntry`: `metaDescription`, `featuredImage`, `tags`, `internalTags`. Defaults + raw-load migration live in `src/lib/store.ts`.
 - 9 content types: `article`, `money_tip`, `checklist`, `quiz`, `expert_insight`, `user_story`, `video`, `calculator`, `infographic`. `article` uses markdown; the other 8 are JSON-backed.
 - Switching content type mid-draft prompts before destroying incompatible output. **JSON ↔ JSON** switches preserve the title. **Article ↔ JSON** is destructive: it also resets `editingId`, `_currentStatus`, `_slug`, `_excerpt`, `_categories`, etc. via `_resetMeta()` so a Save/Publish doesn't push empty content under the previous entry's slug.
 
