@@ -187,6 +187,11 @@ class FFApp extends LitElement {
   @state() private showKeyPrompt = false
   @state() private keyDraft = ''
 
+  // Switch-to-AI confirmation modal: shown when flipping manual → ai with
+  // non-empty manual content. Three options: use as context / start fresh /
+  // cancel.
+  @state() private _aiFlipPromptOpen = false
+
   // Responsive drawer state (only used below the `lg` breakpoint).
   @state() private _sidebarDrawerOpen = false
   @state() private _railDrawerOpen = false
@@ -390,13 +395,76 @@ class FFApp extends LitElement {
     }
   }
 
-  /** Mid-flow toggle: switch between AI and manual without losing content. */
+  /** Mid-flow toggle: switch between AI and manual without losing content.
+   *  Manual → AI with meaningful manual content opens a confirmation modal
+   *  (use as context / start fresh / cancel) so we never silently destroy
+   *  the writer's work when they hit Regenerate. */
   private _flipMode(next: 'ai' | 'manual') {
     if (this.creationMode === next) return
+    if (next === 'ai' && this.creationMode === 'manual' && this._hasMeaningfulManualContent()) {
+      this._aiFlipPromptOpen = true
+      return
+    }
     this.creationMode = next
     if (next === 'manual' && !this.output) {
       this.output = this.contentType === 'article' ? '' : JSON.stringify(emptyContentForType(this.contentType), null, 2)
     }
+  }
+
+  /** True when the writer has actually committed something to the manual
+   *  draft (a title, a body field, or any typed content). The empty JSON
+   *  shell that gets seeded on _enterEditor('manual') does not count. */
+  private _hasMeaningfulManualContent(): boolean {
+    if (!this.output.trim()) return false
+    if (this.contentType === 'article') return this.output.trim().length > 0
+    if (this._getTitle().trim()) return true
+    if (this.isDirty) return true
+    return false
+  }
+
+  /** Picked "Use as AI context" in the flip modal. The manual draft is
+   *  copied into _seoArticle, which the prompt builders already pass to
+   *  the model as primary factual basis. Output is preserved so the writer
+   *  can still see it until they hit Regenerate. */
+  private _flipToAiUseContext() {
+    const manual = this.contentType === 'article'
+      ? stripPublishingSections(this.output)
+      : this._jsonAsContextText()
+    this._aiFlipPromptOpen = false
+    this.creationMode = 'ai'
+    if (manual.trim()) {
+      const existing = this._seoArticle.trim()
+      this._seoArticle = existing && !existing.includes(manual.trim())
+        ? `${existing}\n\n${manual}`.trim()
+        : manual
+      this.isDirty = true
+    }
+  }
+
+  /** Picked "Start fresh with AI" in the flip modal. The manual draft is
+   *  cleared so Regenerate / Generate is honest about what it produces. */
+  private _flipToAiStartFresh() {
+    this._aiFlipPromptOpen = false
+    this._pushUndo()
+    this.creationMode = 'ai'
+    this.output = this.contentType === 'article' ? '' : JSON.stringify(emptyContentForType(this.contentType), null, 2)
+    this.isDirty = false
+    // Strip the empty shell entirely for JSON types so the AI empty-state shows.
+    if (this.contentType !== 'article') this.output = ''
+  }
+
+  private _closeAiFlipPrompt() {
+    this._aiFlipPromptOpen = false
+  }
+
+  /** Render the manual JSON draft as plain-text context for the AI. We pass
+   *  the title and any prose-bearing fields; the structural keys (slug,
+   *  bookmarkable, etc) are useless for context. */
+  private _jsonAsContextText(): string {
+    try {
+      const obj = JSON.parse(this.output) as Record<string, unknown>
+      return JSON.stringify(obj, null, 2)
+    } catch { return '' }
   }
 
   private async _generate() {
@@ -1834,6 +1902,44 @@ class FFApp extends LitElement {
         ${this._renderSlashMenu()}
         ${this._renderLinkModal()}
         ${this.showKeyPrompt ? this._renderKeyPrompt() : ''}
+        ${this._aiFlipPromptOpen ? this._renderAiFlipPrompt() : ''}
+      </div>
+    `
+  }
+
+  private _renderAiFlipPrompt() {
+    const isArticle = this.contentType === 'article'
+    return html`
+      <div class="fixed inset-0 bg-black/40 z-50 flex items-center justify-center"
+        @click=${(e: Event) => { if (e.target === e.currentTarget) this._closeAiFlipPrompt() }}
+        @keydown=${(e: KeyboardEvent) => { if (e.key === 'Escape') { e.stopPropagation(); this._closeAiFlipPrompt() } }}>
+        <div class="bg-white rounded-2xl shadow-2xl w-[480px] max-w-[calc(100vw-2rem)] mx-4 p-6 ff-fade-in"
+          role="dialog" aria-modal="true" aria-labelledby="ff-aiflip-title">
+          <h3 id="ff-aiflip-title" class="text-[16px] font-semibold mb-1">Use what you've written?</h3>
+          <p class="text-[12.5px] text-gray-500 mb-4 leading-relaxed">You're switching from <span class="font-semibold text-gray-700">Write it myself</span> to <span class="font-semibold text-gray-700">Draft with AI</span>. Pick how to handle your existing draft.</p>
+
+          <div class="flex flex-col gap-2 mb-1">
+            <button @click=${() => this._flipToAiUseContext()}
+              data-modal-autofocus="aiflip"
+              class="text-left rounded-xl border-2 border-gray-200 hover:border-[#7c70e3] hover:bg-violet-50/40 transition-colors p-4">
+              <p class="text-[14px] font-semibold text-[#1a1a1a] mb-1">Use what I've written as AI context</p>
+              <p class="text-[12.5px] text-gray-500 leading-relaxed">${isArticle
+                ? 'Your manual draft becomes the source material the AI draws from. Title and metadata are preserved. The AI rewrites it into a polished draft.'
+                : 'Your manual fields become the source material the AI draws from. Title and metadata are preserved. The AI fills in a fresh draft.'}</p>
+            </button>
+
+            <button @click=${() => this._flipToAiStartFresh()}
+              class="text-left rounded-xl border-2 border-gray-200 hover:border-red-300 hover:bg-red-50/30 transition-colors p-4">
+              <p class="text-[14px] font-semibold text-[#1a1a1a] mb-1">Start fresh with AI</p>
+              <p class="text-[12.5px] text-gray-500 leading-relaxed">Clear my draft and start a new one with AI. <span class="text-red-600 font-semibold">This can't be undone.</span></p>
+            </button>
+          </div>
+
+          <div class="flex justify-end mt-4">
+            <button @click=${() => this._closeAiFlipPrompt()}
+              class="text-[12px] text-gray-500 hover:text-gray-700 px-3 py-1.5">Cancel</button>
+          </div>
+        </div>
       </div>
     `
   }
@@ -2231,9 +2337,11 @@ class FFApp extends LitElement {
   }
 
   /** "+ Add block" button rendered at the end of the article. Focuses the
-   *  end of the editor and opens the slash menu. */
+   *  end of the article body editor (NOT the title — the H1 also carries
+   *  data-rewrite="true" for the rewrite toolbar, so a generic selector
+   *  matches the title first) and opens the slash menu. */
   private _focusEndAndOpenSlash() {
-    const editor = this.querySelector('[data-rewrite="true"]') as HTMLElement | null
+    const editor = this.querySelector('[data-article-body="true"]') as HTMLElement | null
     if (!editor) return
     editor.focus()
     const range = document.createRange()
@@ -2362,6 +2470,7 @@ class FFApp extends LitElement {
             })}
             <div
               data-rewrite="true"
+              data-article-body="true"
               data-placeholder="Press / for blocks, or just start writing…"
               class="ff-prose outline-none min-h-[280px] ${this.isGenerating ? 'ff-stream-cursor' : ''}"
               contenteditable=${this.isGenerating ? 'false' : 'true'}
@@ -3685,6 +3794,7 @@ class FFApp extends LitElement {
   // Rising-edge tracking for modal open/close so we can manage focus.
   private _prevKeyPromptOpen = false
   private _prevLinkModalOpen = false
+  private _prevAiFlipPromptOpen = false
   override updated() {
     if (!this._selListenerAttached) {
       this._selListenerAttached = true
@@ -3705,19 +3815,25 @@ class FFApp extends LitElement {
     const keyClosing = !this.showKeyPrompt && this._prevKeyPromptOpen
     const linkOpening = this._linkModalOpen && !this._prevLinkModalOpen
     const linkClosing = !this._linkModalOpen && this._prevLinkModalOpen
+    const aiFlipOpening = this._aiFlipPromptOpen && !this._prevAiFlipPromptOpen
+    const aiFlipClosing = !this._aiFlipPromptOpen && this._prevAiFlipPromptOpen
 
-    if (keyOpening || linkOpening) {
+    if (keyOpening || linkOpening || aiFlipOpening) {
       const active = document.activeElement
       if (active instanceof HTMLElement && active !== document.body) {
         this._modalReturnFocus = active
       }
       requestAnimationFrame(() => {
-        const sel = keyOpening ? '[data-modal-autofocus="key"]' : '[data-modal-autofocus="link"]'
+        const sel = keyOpening
+          ? '[data-modal-autofocus="key"]'
+          : aiFlipOpening
+            ? '[data-modal-autofocus="aiflip"]'
+            : '[data-modal-autofocus="link"]'
         const input = this.querySelector(sel) as HTMLInputElement | null
         input?.focus()
         input?.select?.()
       })
-    } else if (keyClosing || linkClosing) {
+    } else if (keyClosing || linkClosing || aiFlipClosing) {
       const target = this._modalReturnFocus
       this._modalReturnFocus = null
       if (target && document.contains(target)) {
@@ -3726,6 +3842,7 @@ class FFApp extends LitElement {
     }
     this._prevKeyPromptOpen = this.showKeyPrompt
     this._prevLinkModalOpen = this._linkModalOpen
+    this._prevAiFlipPromptOpen = this._aiFlipPromptOpen
   }
 
   /** Sanitize anything pasted into a contenteditable surface — strip the
