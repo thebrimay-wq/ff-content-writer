@@ -56,6 +56,7 @@ export interface ContentEntry {
   // Workflow
   assignee: string              // name/email of reviewer — drives "My queue"
   reviewNotes: string           // most recent review message; shown as banner when in_review
+  creationMode: 'ai' | 'manual' // how the writer started the draft — drives sidebar layout on reopen
   // Trash retention
   deletedAt: number | null      // set when status flips to 'trash'; drives 30-day auto-purge
 }
@@ -153,6 +154,7 @@ function migrate(raw: Record<string, unknown>): ContentEntry {
     assignee: (raw.assignee as string) ?? '',
     reviewNotes: (raw.reviewNotes as string) ?? '',
     deletedAt: typeof raw.deletedAt === 'number' ? raw.deletedAt : null,
+    creationMode: raw.creationMode === 'manual' ? 'manual' : 'ai',
   }
 }
 
@@ -193,6 +195,7 @@ export interface SaveInput {
   output: string
   region?: string
   language?: string
+  creationMode?: 'ai' | 'manual'
 }
 
 const ENTRY_DEFAULTS: Omit<ContentEntry, 'id' | 'title' | 'contentType' | 'audience' | 'topic' | 'promptNotes' | 'expertSources' | 'output' | 'createdAt' | 'updatedAt'> = {
@@ -227,6 +230,7 @@ const ENTRY_DEFAULTS: Omit<ContentEntry, 'id' | 'title' | 'contentType' | 'audie
   assignee: '',
   reviewNotes: '',
   deletedAt: null,
+  creationMode: 'ai',
 }
 
 export function createEntry(input: SaveInput): ContentEntry {
@@ -246,6 +250,7 @@ export function createEntry(input: SaveInput): ContentEntry {
     updatedAt: now,
     ...(input.region ? { region: input.region } : {}),
     ...(input.language ? { language: input.language } : {}),
+    ...(input.creationMode ? { creationMode: input.creationMode } : {}),
   }
   const all = loadAll()
   all.unshift(entry)
@@ -265,6 +270,7 @@ export function updateEntry(id: string, input: SaveInput): ContentEntry | null {
     promptNotes: input.promptNotes,
     expertSources: input.expertSources,
     output: input.output,
+    ...(input.creationMode ? { creationMode: input.creationMode } : {}),
     title: deriveTitle(input.topic, input.output) || all[idx].title,
     updatedAt: Date.now(),
   }

@@ -270,7 +270,7 @@ class FFApp extends LitElement {
     }
     this.tab = 'new'
     this.mode = 'editor'
-    this.creationMode = 'ai'
+    this.creationMode = entry.creationMode === 'manual' ? 'manual' : 'ai'
     this._currentStatus = entry.status ?? 'draft'
     this._hydrateMeta(entry)
     this._undoStack = []
@@ -642,6 +642,7 @@ class FFApp extends LitElement {
       output: cleaned,
       region: this.region,
       language: this.language,
+      creationMode: this.creationMode,
     }
     if (this.editingId) {
       const u = updateEntry(this.editingId, payload)
@@ -679,6 +680,10 @@ class FFApp extends LitElement {
   /** Persist if needed, then flip status to published. */
   private _publish() {
     if (!this.output.trim() || this.isGenerating) return
+    // Defense in depth: the button is already disabled when readiness fails,
+    // but never publish a half-formed entry just because someone reached this
+    // path another way (programmatic, race after unblock, etc.).
+    if (!this._canPublish) return
     // Save first so we have an editingId to patch.
     if (!this.editingId || this.isDirty) this._save()
     if (!this.editingId) return
@@ -1008,13 +1013,18 @@ class FFApp extends LitElement {
         </button>
 
         ${!hasOutput ? html`
-          <p class="text-[11px] text-gray-400 text-center">Generate or write a draft first.</p>
+          <p class="text-[11px] text-gray-400 text-center">
+            ${this.creationMode === 'manual' ? 'Start writing to enable publishing.' : 'Generate or write a draft first.'}
+          </p>
         ` : !canPublish ? html`
           <p class="text-[11px] text-amber-700 text-center">Complete required items before publishing.</p>
         ` : ''}
       </div>
 
-      ${hasOutput ? html`
+      <!-- Manual mode shows the metadata panel immediately so writers can fill
+           slug / categories / SEO before they touch body copy. AI mode keeps
+           the panel hidden until generation has produced something. -->
+      ${(hasOutput || this.creationMode === 'manual') ? html`
         <!-- PUBLISH READINESS -->
         <div class="px-5 pt-4">
           ${this._renderPublishReadiness()}
@@ -2206,6 +2216,15 @@ class FFApp extends LitElement {
   // ── Video / Calculator / Infographic ───────────────────────────────────────
   private _setSimpleField(field: string, value: string) {
     this._updateJson<any>(c => ({ ...c, [field]: value }))
+    if (field === 'title') this._maybeAutoSlug(value)
+  }
+
+  /** Inline-canvas title commits (H1) should auto-derive the slug just like the
+   *  right-rail title input does. Right-rail uses `_setTitle`; this is the
+   *  shared helper for every content-type's onCommit handler. */
+  private _maybeAutoSlug(title: string) {
+    if (!this._slugAutoFromTitle) return
+    this._slug = deriveSlug((title ?? '').replace(/<[^>]+>/g, '').trim())
   }
 
   /** Reusable image upload control for thumbnail / hero fields. */
@@ -2357,7 +2376,7 @@ class FFApp extends LitElement {
           ${this._renderTitleHeader({
             title,
             placeholder: 'Untitled infographic',
-            onCommit: (t) => this._updateJson<any>(c => ({ ...c, _extras: { ...(c._extras ?? {}), title: t } })),
+            onCommit: (t) => { this._updateJson<any>(c => ({ ...c, _extras: { ...(c._extras ?? {}), title: t } })); this._maybeAutoSlug(t) },
           })}
 
           <div class="mb-5">
@@ -2423,7 +2442,7 @@ class FFApp extends LitElement {
             placeholder: 'Untitled money tip',
             asHtml: true,
             highlightTarget: true,
-            onCommit: (htmlVal) => this._updateJson<MoneyTip>(t => ({ ...t, title: htmlVal })),
+            onCommit: (htmlVal) => { this._updateJson<MoneyTip>(t => ({ ...t, title: htmlVal })); this._maybeAutoSlug(htmlVal) },
             readTimeFor: cards.map(c => `${c.heading ?? ''} ${c.body ?? ''}`).join(' '),
           })}
           <p class="text-[11px] text-gray-400 mb-3 -mt-3">Select text in the title above to highlight it on the front end.</p>
@@ -2484,7 +2503,7 @@ class FFApp extends LitElement {
           ${this._renderTitleHeader({
             title: cl?.title ?? '',
             placeholder: 'Untitled checklist',
-            onCommit: (t) => this._updateJson<Checklist>(c => ({ ...c, title: t })),
+            onCommit: (t) => { this._updateJson<Checklist>(c => ({ ...c, title: t })); this._maybeAutoSlug(t) },
             readTimeFor: [cl?.intro_paragraph, ...(cl?.sections ?? []).flatMap(s => [s.title, s.description, ...(s.items ?? []).map(i => i.label)])].filter(Boolean).join(' '),
           })}
           <p
@@ -2609,7 +2628,7 @@ class FFApp extends LitElement {
           ${this._renderTitleHeader({
             title: ei?.title ?? '',
             placeholder: 'Untitled expert insight',
-            onCommit: (t) => this._updateExpertField('title', t),
+            onCommit: (t) => { this._updateExpertField('title', t); this._maybeAutoSlug(t) },
             readTimeFor: [ei?.intro_paragraph, ...(ei?.sections ?? []).map(s => s.body)].filter(Boolean).join(' '),
           })}
           <p
@@ -2683,7 +2702,7 @@ class FFApp extends LitElement {
           ${this._renderTitleHeader({
             title: u?.title ?? '',
             placeholder: 'Untitled user story',
-            onCommit: (t) => this._updateStoryField('title', t),
+            onCommit: (t) => { this._updateStoryField('title', t); this._maybeAutoSlug(t) },
             readTimeFor: u?.copy ?? '',
           })}
           <p
@@ -2721,7 +2740,7 @@ class FFApp extends LitElement {
           ${this._renderTitleHeader({
             title: q?.title ?? '',
             placeholder: 'Untitled quiz',
-            onCommit: (t) => this._updateJson<Quiz>(c => ({ ...c, title: t })),
+            onCommit: (t) => { this._updateJson<Quiz>(c => ({ ...c, title: t })); this._maybeAutoSlug(t) },
             readTimeFor: [q?.intro_paragraph, ...(q?.questions ?? []).flatMap(qq => [qq.questionText, qq.explanation, ...(qq.answers ?? []).map(a => a.answerText)])].filter(Boolean).join(' '),
           })}
           <p
@@ -2957,6 +2976,7 @@ class FFApp extends LitElement {
     if (next === this.output) return
     this._pushUndo()
     this.output = next
+    this._maybeAutoSlug(t)
     this.isDirty = true
   }
   private _setArticleBody(bodyMd: string) {
