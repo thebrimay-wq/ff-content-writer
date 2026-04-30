@@ -2578,7 +2578,6 @@ class FFApp extends LitElement {
     if (this.contentType === 'article') {
       const title = this._articleTitle()
       const body = this._articleBody()
-      const bodyHtml = body ? (marked.parse(body) as string) : ''
       return html`
         <div class="flex-1 overflow-y-auto scrollbar-thin">
           <div class="mx-auto max-w-[720px] px-4 sm:px-8 lg:px-12 py-6 lg:py-10">
@@ -2596,7 +2595,7 @@ class FFApp extends LitElement {
               contenteditable=${this.isGenerating ? 'false' : 'true'}
               spellcheck="true"
               @blur=${(e: Event) => this._setArticleBody(htmlToMarkdown((e.target as HTMLElement).innerHTML))}
-            >${unsafeHTML(bodyHtml)}</div>
+            ></div>
             ${this.isGenerating ? '' : html`
               <button @click=${() => this._focusEndAndOpenSlash()}
                 class="mt-6 flex items-center gap-2 text-[12px] font-medium text-gray-400 hover:text-[#063853] hover:bg-gray-50 px-2.5 py-1.5 rounded-md transition-colors">
@@ -3993,7 +3992,30 @@ class FFApp extends LitElement {
         if (el.innerText !== expected) el.innerText = expected
       }
     })
+
+    // Article body editor: same problem as data-ce-text, but the value comes
+    // from `_articleBody()` rendered through marked. Skip when focused unless
+    // we set the force flag (slash insert / undo / external content change
+    // that must canonicalize the DOM mid-edit).
+    if (this.contentType === 'article') {
+      const editor = this.querySelector('[data-article-body="true"]') as HTMLElement | null
+      if (editor) {
+        const force = this._articleBodyForceSync
+        this._articleBodyForceSync = false
+        const isFocused = editor === active
+        if (!isFocused || force) {
+          const body = this._articleBody()
+          const expected = body ? (marked.parse(body) as string) : '<p><br></p>'
+          if (editor.innerHTML !== expected) editor.innerHTML = expected
+        }
+      }
+    }
   }
+
+  // Set true to force the next `updated()` cycle to overwrite the article body
+  // editor's innerHTML even while it has focus (e.g. after a slash-block insert
+  // or an undo) so any orphan DOM left behind by execCommand gets canonicalized.
+  private _articleBodyForceSync = false
 
   /** Sanitize anything pasted into a contenteditable surface — strip the
    *  Office/Word noise (namespaces, mso-* styles, classes, font tags,
@@ -4779,7 +4801,11 @@ class FFApp extends LitElement {
     }
   }
 
-  /** Replace the "/" + filter chars at cursor with the chosen block HTML. */
+  /** Replace the "/" + filter chars at cursor with the chosen block HTML.
+   *  We mutate the DOM via `execCommand` for correct undo grouping, then mark
+   *  the article body for a force-sync in `updated()` — that overwrite cleans
+   *  up any orphan nodes the browser parked outside our managed structure
+   *  (otherwise the new block ends up duplicated on the next re-render). */
   private _insertSlashBlock(block: { html: string; key: string }) {
     const sel = window.getSelection()
     if (!sel || !sel.anchorNode) { this._closeSlash(); return }
@@ -4802,15 +4828,51 @@ class FFApp extends LitElement {
     document.execCommand('insertHTML', false, block.html)
 
     // Capture markdown roundtrip from the editor surface we landed in
-    let parent: Node | null = sel.anchorNode
+    const sel2 = window.getSelection()
+    let parent: Node | null = sel2?.anchorNode ?? sel.anchorNode
     while (parent && parent.nodeType !== 1) parent = parent.parentNode
     const editor = parent && (parent as HTMLElement).closest('[data-rewrite="true"]') as HTMLElement | null
     if (editor && this.contentType === 'article') {
       const md = htmlToMarkdown(editor.innerHTML)
-      if (md && md !== this.output) { this.output = md; this.isDirty = true }
+      if (md !== this.output) {
+        this.output = md
+        this.isDirty = true
+        // Force the editor's innerHTML to be rebuilt from the new markdown on
+        // the next update tick — this clears any orphan nodes that landed
+        // outside Lit-managed regions before we removed `unsafeHTML`.
+        this._articleBodyForceSync = true
+        void this.updateComplete.then(() => this._placeCaretAtEditorEnd(editor))
+      } else {
+        // Output didn't change (rare — same content reinserted). Still
+        // canonicalize the DOM to drop any orphans.
+        this._articleBodyForceSync = true
+        this.requestUpdate()
+        void this.updateComplete.then(() => this._placeCaretAtEditorEnd(editor))
+      }
     }
 
     this._closeSlash()
+  }
+
+  /** Place the caret at the end of the article body editor and focus it.
+   *  Used after slash-insert so the user can immediately keep typing in the
+   *  block they just inserted. */
+  private _placeCaretAtEditorEnd(editor: HTMLElement) {
+    editor.focus()
+    const r = document.createRange()
+    // Prefer placing the caret inside the LAST block element so typing extends it
+    // rather than starting a stray text node beside it.
+    const lastChild = editor.lastElementChild as HTMLElement | null
+    if (lastChild) {
+      r.selectNodeContents(lastChild)
+      r.collapse(false)
+    } else {
+      r.selectNodeContents(editor)
+      r.collapse(false)
+    }
+    const s = window.getSelection()
+    s?.removeAllRanges()
+    s?.addRange(r)
   }
 
   private _renderSlashMenu() {
