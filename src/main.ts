@@ -1726,6 +1726,11 @@ class FFApp extends LitElement {
         this.output = JSON.stringify(shell, null, 2)
         this.isDirty = true
       }
+    } else if (!goingArticle) {
+      // No prior output (e.g. Blank mode just opened) — seed the empty shell
+      // for the new type so the renderer has something to bind to and the
+      // Add-slide / Add-section / Add-question buttons can mutate it.
+      this.output = JSON.stringify(emptyContentForType(next), null, 2)
     }
     this.contentType = next
   }
@@ -3391,10 +3396,13 @@ class FFApp extends LitElement {
   // (Article edits go through _setArticleBody; per-type edits go through their
   // specific update methods. No generic capture handler is needed.)
 
-  /** Generic JSON-mutator: parse current output, apply updater, re-serialize. */
+  /** Generic JSON-mutator: parse current output, apply updater, re-serialize.
+   *  If the current output is empty or unparseable (e.g. user in Blank mode just
+   *  switched content type), seed with the empty shell for the current type so
+   *  Add-slide / Add-section / Add-question always actually adds something. */
   private _updateJson<T extends AnyContent>(updater: (c: T) => T) {
-    const parsed = parseJsonContent(this.output) as T | null
-    if (!parsed) return
+    let parsed = parseJsonContent(this.output) as T | null
+    if (!parsed) parsed = emptyContentForType(this.contentType) as T
     this._pushUndo()
     const next = updater(parsed)
     this.output = JSON.stringify(next, null, 2)
