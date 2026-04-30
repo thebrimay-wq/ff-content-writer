@@ -201,12 +201,22 @@ class FFApp extends LitElement {
     this._refreshEntries()
     window.addEventListener('beforeunload', this._onBeforeUnload)
     window.addEventListener('resize', this._onResize)
+    document.addEventListener('click', this._onDocClickCloseRefine)
+    document.addEventListener('keydown', this._onDocKeydownCloseRefine)
   }
 
   override disconnectedCallback() {
     super.disconnectedCallback()
     window.removeEventListener('beforeunload', this._onBeforeUnload)
     window.removeEventListener('resize', this._onResize)
+    document.removeEventListener('click', this._onDocClickCloseRefine)
+    document.removeEventListener('keydown', this._onDocKeydownCloseRefine)
+  }
+
+  /** Close the toolbar Refine popover when the user clicks anywhere else. */
+  private _onDocClickCloseRefine = () => { if (this._refineOpen) this._refineOpen = false }
+  private _onDocKeydownCloseRefine = (e: KeyboardEvent) => {
+    if (e.key === 'Escape' && this._refineOpen) { this._refineOpen = false; this._refineCustom = '' }
   }
 
   /** Warn when leaving with unsaved work in the local draft buffer. The
@@ -739,6 +749,10 @@ class FFApp extends LitElement {
   // Pre-generation knob: when contentType === 'quiz', the writer picks the quiz
   // format up-front so the AI generates the right shape from the start.
   @state() private _quizTypeChoice: 'classification' | 'tiered' | 'knowledge' = 'classification'
+
+  // Refine popover (toolbar button → menu of whole-document AI refinements).
+  @state() private _refineOpen = false
+  @state() private _refineCustom = ''
 
   // Right-rail tab navigation. AI Context and Advanced never show "missing" badges.
   @state() private _rightTab: 'basics' | 'categories' | 'seo' | 'ai' | 'advanced' = 'basics'
@@ -2041,19 +2055,7 @@ class FFApp extends LitElement {
                   </button>
                 ` : ''}
 
-                <!-- Quick refine — only shown once there's a draft. AI tweaks the whole piece. -->
-                ${this.output ? html`
-                  <div class="mt-3 pt-3 border-t border-gray-100 flex flex-col gap-1">
-                    <p class="text-[10px] font-bold tracking-widest uppercase text-gray-500 mb-1">Refine the draft</p>
-                    ${['Make warmer', 'Shorten', 'More professional', 'Simpler language'].map(label => html`
-                      <button @click=${() => this._refine(label.toLowerCase())}
-                        ?disabled=${this.isGenerating}
-                        class="text-left text-[12px] text-gray-600 hover:text-[#063853] py-1 disabled:opacity-40 disabled:cursor-not-allowed">
-                        ${label}
-                      </button>
-                    `)}
-                  </div>
-                ` : ''}
+                <!-- Refine actions moved to the center toolbar (Refine button). -->
               </div>
             ` : html`
               <!-- Manual mode: minimal sidebar — just region, mode flip, type. Save/Publish lives in the right rail. -->
@@ -2133,6 +2135,56 @@ class FFApp extends LitElement {
             </span>
           ` : ''}
           <span class="w-px h-5 bg-gray-200 mx-1"></span>
+
+          <!-- Refine the draft — primary AI action while writing. -->
+          <div class="relative">
+            <button
+              @click=${(e: Event) => { e.stopPropagation(); this._refineOpen = !this._refineOpen }}
+              ?disabled=${this.isGenerating}
+              title="Refine the whole draft with AI"
+              class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md transition-colors text-[11.5px] font-semibold ${this._refineOpen ? 'bg-violet-100 text-violet-800' : 'bg-violet-50 text-violet-700 hover:bg-violet-100'} disabled:opacity-40 disabled:cursor-not-allowed">
+              <svg width="12" height="12" viewBox="0 0 14 14" fill="none" class="ff-spark"><path d="M7 1l1.5 4 4 2-4 1.5L7 13l-1.5-4.5-4-1.5 4-2L7 1z" fill="currentColor"/></svg>
+              Refine
+              <svg width="9" height="9" viewBox="0 0 12 12" fill="none" class="${this._refineOpen ? 'rotate-180' : ''} transition-transform"><path d="M3 5l3 3 3-3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </button>
+            ${this._refineOpen ? html`
+              <div class="absolute right-0 top-full mt-1.5 w-64 rounded-lg border border-gray-200 bg-white shadow-lg z-30 ff-fade-in"
+                @click=${(e: Event) => e.stopPropagation()}>
+                <div class="p-1">
+                  ${[
+                    { label: 'Make warmer',       hint: 'More personal, less formal' },
+                    { label: 'Shorten',           hint: 'Tighter, fewer words' },
+                    { label: 'More professional', hint: 'Polished, business tone' },
+                    { label: 'Simpler language',  hint: 'Plain English, easier read' },
+                  ].map(a => html`
+                    <button @click=${() => { this._refineOpen = false; this._refine(a.label.toLowerCase()) }}
+                      ?disabled=${this.isGenerating}
+                      class="w-full text-left px-2.5 py-1.5 rounded-md hover:bg-violet-50 transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex flex-col">
+                      <span class="text-[12.5px] font-semibold text-gray-800">${a.label}</span>
+                      <span class="text-[11px] text-gray-500">${a.hint}</span>
+                    </button>
+                  `)}
+                </div>
+                <div class="border-t border-gray-100 p-2 flex flex-col gap-1.5">
+                  <label class="text-[10px] font-bold tracking-widest uppercase text-gray-400 px-0.5">Custom</label>
+                  <input type="text" .value=${this._refineCustom}
+                    @input=${(e: Event) => { this._refineCustom = (e.target as HTMLInputElement).value }}
+                    @keydown=${(e: KeyboardEvent) => {
+                      if (e.key === 'Enter' && this._refineCustom.trim()) {
+                        const v = this._refineCustom.trim()
+                        this._refineCustom = ''
+                        this._refineOpen = false
+                        this._refine(v)
+                      }
+                    }}
+                    placeholder="e.g. add a stat, swap example…"
+                    class="w-full rounded-md border border-gray-200 bg-white px-2 py-1.5 text-[12px] outline-none focus:border-gray-400" />
+                  <p class="text-[10.5px] text-gray-400">Press Enter to apply.</p>
+                </div>
+              </div>
+            ` : ''}
+          </div>
+
           <button
             @click=${() => { this._viewMode = this._viewMode === 'source' ? 'edit' : 'source' }}
             title="Toggle source / HTML view (admin)"
