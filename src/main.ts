@@ -154,18 +154,15 @@ class FFApp extends LitElement {
   @state() private error = ''
   @state() private lastRequest: GenerateRequest | null = null
 
-  // While the model streams, we accumulate chunks here instead of mutating
-  // `output`. The center pane shows a loading overlay (spinner + rotating
-  // message) so the user never sees the partial draft flicker. Once the stream
-  // ends we commit the buffer to `output` and — for article — drive a short
-  // typewriter-style reveal animation so the final content appears LLM-style.
-  private _streamBuffer = ''
-  @state() private _isRevealing = false
-  @state() private _revealLen = 0
-  private _revealTimer: number | null = null
+  // While the model is "thinking" — i.e. between request submit and the first
+  // streamed chunk — we show a loading overlay with a rotating witty message.
+  // The moment the first chunk arrives, the overlay yields to the live editor
+  // and content streams in token-by-token, LLM-style. The cache fix in
+  // `updated()` (`_lastSyncedBodyHtml`) keeps each chunk's DOM update minimal,
+  // which is what makes the streaming smooth instead of flicker-y.
   @state() private _genMessageIdx = 0
   private _genMessageTimer: number | null = null
-  private _prevIsGenerating = false
+  private _prevShowingThinking = false
   private static readonly _GEN_MESSAGES = [
     'AI is thinking…',
     'Twiddling thumbs…',
@@ -242,7 +239,6 @@ class FFApp extends LitElement {
     window.removeEventListener('resize', this._onResize)
     document.removeEventListener('click', this._onDocClickCloseRefine)
     document.removeEventListener('keydown', this._onDocKeydownCloseRefine)
-    if (this._revealTimer != null) { clearInterval(this._revealTimer); this._revealTimer = null }
     if (this._genMessageTimer != null) { clearInterval(this._genMessageTimer); this._genMessageTimer = null }
   }
 
@@ -521,9 +517,7 @@ class FFApp extends LitElement {
     this._abort?.abort()
     const controller = new AbortController()
     this._abort = controller
-    this._cancelBodyReveal()
     this.output = ''
-    this._streamBuffer = ''
     this.error = ''
     this.isGenerating = true
     this.editingId = null
@@ -533,11 +527,10 @@ class FFApp extends LitElement {
         this.apiKey,
         [{ role: 'user', content: userMsg }],
         systemPrompt,
-        (chunk) => { this._streamBuffer += chunk; this.isDirty = true },
+        (chunk) => { this.output += chunk; this.isDirty = true },
         controller.signal,
         useJson ? 8192 : 2048,
       )
-      this._commitStreamBuffer()
       // Fire-and-forget enrichments — run after main draft, never block UX.
       // Sources / long-form skip when curated. Excerpt + meta description refresh every regenerate.
       void this._autoExtractSources(req)
@@ -548,7 +541,6 @@ class FFApp extends LitElement {
       if (!(err instanceof Error && err.name === 'AbortError')) {
         this.error = err instanceof Error ? err.message : 'Something went wrong.'
       }
-      this._commitStreamBuffer()
     } finally {
       this.isGenerating = false
     }
@@ -766,30 +758,20 @@ class FFApp extends LitElement {
     this._abort?.abort()
     const controller = new AbortController()
     this._abort = controller
-    this._cancelBodyReveal()
     const previous = this.output
     this.output = ''
-    this._streamBuffer = ''
     this.error = ''
     this.isGenerating = true
     try {
       await streamMessage(this.apiKey, [{ role: 'user', content: msg }], systemPrompt,
-        (chunk) => { this._streamBuffer += chunk; this.isDirty = true },
+        (chunk) => { this.output += chunk; this.isDirty = true },
         controller.signal,
         useJson ? 8192 : 2048,
       )
-      this._commitStreamBuffer()
     } catch (err) {
+      this.output = previous
       if (!(err instanceof Error && err.name === 'AbortError')) {
         this.error = err instanceof Error ? err.message : 'Refine failed.'
-      }
-      // Restore prior draft on refine failure (unchanged behavior). On abort,
-      // commit whatever streamed so the user keeps partial progress.
-      if (err instanceof Error && err.name === 'AbortError') {
-        this._commitStreamBuffer()
-      } else {
-        this._streamBuffer = ''
-        this.output = previous
       }
     } finally {
       this.isGenerating = false
@@ -2374,7 +2356,9 @@ class FFApp extends LitElement {
               <button @click=${() => { this.error = '' }} class="text-red-400 hover:text-red-600 px-1" aria-label="Dismiss error">×</button>
             </div>
           ` : ''}
-          ${this.isGenerating ? this._renderGeneratingOverlay() : this._renderCenter()}
+          ${this.isGenerating && !this.output.trim()
+            ? this._renderGeneratingOverlay()
+            : this._renderCenter()}
         </main>
 
         <!-- RIGHT RAIL -->
@@ -2656,8 +2640,8 @@ class FFApp extends LitElement {
               data-rewrite="true"
               data-article-body="true"
               data-placeholder="Press / for blocks, or just start writing…"
-              class="ff-prose outline-none min-h-[280px] ${this._isRevealing ? 'ff-stream-cursor' : ''}"
-              contenteditable=${this._isRevealing ? 'false' : 'true'}
+              class="ff-prose outline-none min-h-[280px] ${this.isGenerating ? 'ff-stream-cursor' : ''}"
+              contenteditable=${this.isGenerating ? 'false' : 'true'}
               spellcheck="true"
               @blur=${(e: Event) => this._setArticleBody(htmlToMarkdown((e.target as HTMLElement).innerHTML))}
             ></div>
@@ -3624,71 +3608,21 @@ class FFApp extends LitElement {
     return `${minutes} min`
   }
 
-  /** What the article renderer should display right now. Equal to `output` in
-   *  the steady state; during the post-stream typewriter reveal it's a prefix
-   *  of `output` that grows over time. Used for read-only render only —
-   *  mutations (save, set title, set body) always operate on full `output`. */
-  private _displayedOutput(): string {
-    if (this._isRevealing) return this.output.slice(0, this._revealLen)
-    return this.output
-  }
   /** Article: extract the first `# Title` line. */
   private _articleTitle(): string {
-    const md = stripPublishingSections(this._displayedOutput())
+    const md = stripPublishingSections(this.output)
     const m = md.match(/^#\s+(.*?)\s*$/m)
     return m ? m[1] : ''
   }
   /** Article: everything after the first `# Title` line. */
   private _articleBody(): string {
-    const md = stripPublishingSections(this._displayedOutput())
+    const md = stripPublishingSections(this.output)
     return md.replace(/^#\s+.*\r?\n+/, '')
   }
 
-  /** Commit the in-progress stream buffer to `output`. For article we kick off
-   *  a typewriter-style reveal; other types snap to the full payload. Idempotent
-   *  — safe to call from both the success path and the catch (abort) path. */
-  private _commitStreamBuffer() {
-    if (!this._streamBuffer) return
-    this.output = this._streamBuffer
-    this._streamBuffer = ''
-    if (this.contentType === 'article') this._startBodyReveal()
-  }
-
-  /** Animate `_revealLen` from 0 → output.length so the editor types the result
-   *  in over ~1.2s. Lit re-renders each tick; the body sync in `updated()`
-   *  picks up the sliced markdown automatically. */
-  private _startBodyReveal() {
-    this._cancelBodyReveal()
-    const target = this.output.length
-    if (target === 0) return
-    this._revealLen = 0
-    this._isRevealing = true
-    const totalMs = Math.min(1500, Math.max(500, target * 1.2))
-    const tickMs = 20
-    const ticks = Math.max(1, Math.ceil(totalMs / tickMs))
-    const charsPerTick = Math.max(1, Math.ceil(target / ticks))
-    this._revealTimer = window.setInterval(() => {
-      this._revealLen = Math.min(target, this._revealLen + charsPerTick)
-      if (this._revealLen >= target) {
-        this._cancelBodyReveal()
-      }
-    }, tickMs)
-  }
-
-  /** Stop the reveal interval (if running) and snap the editor to full output. */
-  private _cancelBodyReveal() {
-    if (this._revealTimer != null) {
-      clearInterval(this._revealTimer)
-      this._revealTimer = null
-    }
-    if (this._isRevealing) {
-      this._isRevealing = false
-      this._revealLen = this.output.length
-    }
-  }
-
-  /** Rotate the loading overlay's primary message every ~2.4s. Called from
-   *  `updated()` on the rising edge of `isGenerating`. */
+  /** Rotate the "thinking" overlay's primary message every ~2.4s. Called from
+   *  `updated()` on the rising edge of `isGenerating`; stopped as soon as the
+   *  first chunk arrives (i.e. once `output` is non-empty) or generation ends. */
   private _startGenMessageRotation() {
     this._stopGenMessageRotation()
     this._genMessageIdx = 0
@@ -4125,14 +4059,16 @@ class FFApp extends LitElement {
       }
     })
 
-    // Loading-overlay rotating message timer — track the rising/falling edge
-    // of `isGenerating` so we don't keep restarting the interval each render.
-    if (this.isGenerating && !this._prevIsGenerating) {
+    // Rotating "thinking" message timer — only runs while the loader is
+    // visible (model accepted the request but hasn't streamed anything yet).
+    // The moment the first chunk lands the loader hides, so we stop the timer.
+    const showingThinking = this.isGenerating && !this.output.trim()
+    if (showingThinking && !this._prevShowingThinking) {
       this._startGenMessageRotation()
-    } else if (!this.isGenerating && this._prevIsGenerating) {
+    } else if (!showingThinking && this._prevShowingThinking) {
       this._stopGenMessageRotation()
     }
-    this._prevIsGenerating = this.isGenerating
+    this._prevShowingThinking = showingThinking
 
     // Article body editor: same problem as data-ce-text, but the value comes
     // from `_articleBody()` rendered through marked. Skip when focused unless
