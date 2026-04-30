@@ -3611,26 +3611,37 @@ class FFApp extends LitElement {
       const v = opts.asHtml ? el.innerHTML : el.innerText.trim()
       opts.onCommit(v)
     }
+    // The H1 contains no Lit child expression on purpose. A `${value}` child
+    // leaves a marker comment, and contenteditable typing lands AFTER that
+    // marker — so on next re-render Lit only updates the text BEFORE the
+    // marker, leaving the user's typed text after it. Result: the title
+    // appears twice. Instead we sync the H1's text/HTML imperatively in
+    // `updated()` from `data-ce-text`, only when the H1 isn't focused.
+    const ceFormat = opts.asHtml ? 'html' : 'text'
     const dataAttrs = opts.highlightTarget
       ? html`<h1
           data-highlight-target="true"
           data-rewrite="true"
+          data-ce-text=${opts.title}
+          data-ce-format=${ceFormat}
           data-placeholder=${opts.placeholder}
           class="text-[32px] font-semibold text-[#1a1a1a] leading-tight outline-none focus:bg-amber-50/40 rounded px-1 -mx-1 break-words"
           contenteditable=${this.isGenerating ? 'false' : 'true'}
           spellcheck="true"
           @keydown=${enterBlur}
           @blur=${onBlur}
-        >${opts.asHtml ? unsafeHTML(opts.title) : opts.title}</h1>`
+        ></h1>`
       : html`<h1
           data-rewrite="true"
+          data-ce-text=${opts.title}
+          data-ce-format=${ceFormat}
           data-placeholder=${opts.placeholder}
           class="text-[32px] font-semibold text-[#1a1a1a] leading-tight outline-none focus:bg-amber-50/40 rounded px-1 -mx-1 break-words"
           contenteditable=${this.isGenerating ? 'false' : 'true'}
           spellcheck="true"
           @keydown=${enterBlur}
           @blur=${onBlur}
-        >${opts.asHtml ? unsafeHTML(opts.title) : opts.title}</h1>`
+        ></h1>`
 
     return html`
       <div class="mb-5">
@@ -3963,6 +3974,25 @@ class FFApp extends LitElement {
     this._prevKeyPromptOpen = this.showKeyPrompt
     this._prevLinkModalOpen = this._linkModalOpen
     this._prevAiFlipPromptOpen = this._aiFlipPromptOpen
+
+    // Imperatively sync contenteditable title/source elements that opted in
+    // via `data-ce-text` (with `data-ce-format` of "text" or "html"). We do
+    // this instead of a Lit child expression because `${value}` inside a
+    // contenteditable creates a marker comment that user typing lands after
+    // — which causes the displayed value to duplicate on the next re-render.
+    // Skip whichever element is currently focused so we don't disturb a
+    // mid-edit caret.
+    const active = document.activeElement
+    this.querySelectorAll<HTMLElement>('[data-ce-text]').forEach(el => {
+      if (el === active) return
+      const expected = el.getAttribute('data-ce-text') ?? ''
+      const isHtml = el.getAttribute('data-ce-format') === 'html'
+      if (isHtml) {
+        if (el.innerHTML !== expected) el.innerHTML = expected
+      } else {
+        if (el.innerText !== expected) el.innerText = expected
+      }
+    })
   }
 
   /** Sanitize anything pasted into a contenteditable surface — strip the
