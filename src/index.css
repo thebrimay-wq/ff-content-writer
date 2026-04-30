@@ -117,3 +117,54 @@ mark.ff-highlight, .ff-highlight {
   background: #f9fafb; font-weight: 600; text-align: left; font-size: 13px;
 }
 .ff-prose td, [data-rewrite] td { font-size: 14px; }
+
+/* ══════════════════════════════════════════════════════════════════════════
+   Easter eggs
+   ══════════════════════════════════════════════════════════════════════════ */
+
+/* ── Confetti on first publish ──────────────────────────────────────────── */
+@keyframes ffconfetti-fall {
+  0%   { transform: translateY(-30px) rotate(0deg); opacity: 1; }
+  85%  { opacity: 1; }
+  100% { transform: translateY(110vh) rotate(540deg); opacity: 0; }
+}
+.ff-confetti-layer { position: fixed; inset: 0; pointer-events: none; z-index: 60; overflow: hidden; }
+.ff-confetti-piece {
+  position: absolute; top: -20px;
+  width: 9px; height: 13px; border-radius: 2px;
+  animation: ffconfetti-fall 2.6s cubic-bezier(.4, .85, .55, 1) forwards;
+}
+
+/* ── Sparkle trail ──────────────────────────────────────────────────────── */
+@keyframes ffsparkle-fade {
+  0%   { opacity: 0; transform: translate(-50%, -50%) scale(0.4); }
+  25%  { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+  100% { opacity: 0; transform: translate(-50%, calc(-50% - 18px)) scale(1.5); }
+}
+.ff-sparkle {
+  position: fixed;
+  font-size: 14px;
+  color: var(--ff-violet);
+  pointer-events: none;
+  animation: ffsparkle-fade 1.1s ease-out forwards;
+  z-index: 55;
+  user-select: none;
+}
+
+/* ── Konami: gate card wiggle ───────────────────────────────────────────── */
+@keyframes ffwiggle {
+  0%, 100% { transform: rotate(0deg); }
+  18% { transform: rotate(-2deg); }
+  38% { transform: rotate(2deg); }
+  58% { transform: rotate(-1.4deg); }
+  78% { transform: rotate(1.2deg); }
+}
+.ff-wiggle { animation: ffwiggle 0.55s ease-in-out 1; }
+
+/* ── Konami: greeting bubble pop ────────────────────────────────────────── */
+@keyframes ffgreeting-pop {
+  0%   { opacity: 0; transform: translate(-50%, -8px) scale(0.92); }
+  55%  { opacity: 1; transform: translate(-50%, 0) scale(1.05); }
+  100% { opacity: 1; transform: translate(-50%, 0) scale(1); }
+}
+.ff-greeting { animation: ffgreeting-pop 0.45s cubic-bezier(.4, .8, .5, 1) both; }
