@@ -755,7 +755,7 @@ class FFApp extends LitElement {
   @state() private _refineCustom = ''
 
   // Right-rail tab navigation. AI Context and Advanced never show "missing" badges.
-  @state() private _rightTab: 'basics' | 'categories' | 'seo' | 'ai' | 'advanced' = 'basics'
+  @state() private _rightTab: 'basics' | 'categories' | 'seo' | 'related' | 'ai' | 'advanced' = 'basics'
   @state() private _highlightedField = ''             // pulses the matching [data-field] when set
   @state() private _dropTarget = ''                    // which image uploader is in drag-hover state
 
@@ -906,7 +906,7 @@ class FFApp extends LitElement {
   //  · the Publish button disabled state
   //  · the "Before publishing" checklist below the buttons
   //  · the per-tab "N missing" badges
-  private _readinessChecks(): Array<{ key: string; label: string; tab: 'basics' | 'categories' | 'seo'; ok: boolean }> {
+  private _readinessChecks(): Array<{ key: string; label: string; tab: 'basics' | 'categories' | 'seo' | 'related'; ok: boolean }> {
     const requireImage = ['infographic', 'money_tip', 'expert_insight', 'user_story', 'video'].includes(this.contentType)
     return [
       { key: 'title',           label: 'Add a title',                       tab: 'basics',     ok: !!this._getTitle().trim() },
@@ -915,18 +915,19 @@ class FFApp extends LitElement {
       { key: 'slug',            label: 'Add a URL slug',                    tab: 'seo',        ok: !!this._slug.trim() },
       { key: 'metaDescription', label: 'Add a meta description',            tab: 'seo',        ok: !!this._metaDescription.trim() },
       ...(requireImage ? [{ key: 'featuredImage', label: 'Add a featured image', tab: 'seo' as const, ok: !!this._featuredImage.trim() }] : []),
+      ...(this._supportsRelated ? [{ key: 'related', label: 'Add at least one related resource', tab: 'related' as const, ok: this._relatedResources.length > 0 }] : []),
     ]
   }
 
   private get _missingChecks() { return this._readinessChecks().filter(c => !c.ok) }
   private get _canPublish() { return this._missingChecks.length === 0 }
 
-  private _missingCountForTab(tab: 'basics' | 'categories' | 'seo'): number {
+  private _missingCountForTab(tab: 'basics' | 'categories' | 'seo' | 'related'): number {
     return this._readinessChecks().filter(c => !c.ok && c.tab === tab).length
   }
 
   /** Jump to a missing field: switch tab, scroll into view, pulse-highlight it. */
-  private async _gotoField(tab: 'basics' | 'categories' | 'seo' | 'ai' | 'advanced', key: string) {
+  private async _gotoField(tab: 'basics' | 'categories' | 'seo' | 'related' | 'ai' | 'advanced', key: string) {
     this._rightTab = tab
     this._highlightedField = key
     await this.updateComplete
@@ -980,10 +981,14 @@ class FFApp extends LitElement {
   }
 
   /** Build a ranked list of suggested related resources from the current library.
-   *  Score = number of shared categories. Excludes the entry being edited and
-   *  anything already selected. Falls back to recency when nothing matches. */
+   *  Score weights, tuned for FF taxonomy:
+   *    +3 per shared category   (most semantic — same shelf in the library)
+   *    +2 per shared tag        (writer-curated relevance signal)
+   *    +1 per topic-term match in the candidate's title (fallback)
+   *  Excludes the entry being edited and anything already selected. */
   private _suggestedRelated(): Array<RelatedResourceRef & { score: number }> {
     const myCats = new Set(this._categories.map(c => c.toLowerCase()))
+    const myTags = new Set(this._tags.map(t => t.toLowerCase()))
     const myTopic = (this._getTitle() || this.topic).toLowerCase()
     const myTopicTerms = new Set(myTopic.split(/\s+/).filter(w => w.length > 3))
     const selected = new Set(this._relatedResources.map(r => r.id))
@@ -997,8 +1002,10 @@ class FFApp extends LitElement {
       .filter(e => e.id !== me && !selected.has(e.id) && !seen.has(e.id) && (seen.add(e.id), true))
       .map(e => {
         const eCats = new Set((e.categories ?? []).map(c => c.toLowerCase()))
+        const eTags = new Set((e.tags ?? []).map(t => t.toLowerCase()))
         let score = 0
         for (const c of myCats) if (eCats.has(c)) score += 3
+        for (const t of myTags) if (eTags.has(t)) score += 2
         const title = (e.title ?? '').toLowerCase()
         for (const w of myTopicTerms) if (title.includes(w)) score += 1
         return { id: e.id, title: e.title || '(untitled)', contentType: e.contentType, slug: e.slug ?? '', score }
@@ -1109,6 +1116,7 @@ class FFApp extends LitElement {
           ${this._rightTab === 'basics'     ? this._renderTabBasics()     : ''}
           ${this._rightTab === 'categories' ? this._renderTabCategories() : ''}
           ${this._rightTab === 'seo'        ? this._renderTabSeo()        : ''}
+          ${this._rightTab === 'related'    ? this._renderTabRelated()    : ''}
           ${this._rightTab === 'ai'         ? this._renderTabAi()         : ''}
           ${this._rightTab === 'advanced'   ? this._renderTabAdvanced()   : ''}
         </div>
@@ -1152,13 +1160,16 @@ class FFApp extends LitElement {
   }
 
   private _renderRightTabs() {
-    const tabs: Array<{ id: 'basics' | 'categories' | 'seo' | 'ai' | 'advanced'; label: string; missing?: number }> = [
+    type TabId = 'basics' | 'categories' | 'seo' | 'related' | 'ai' | 'advanced'
+    const all: Array<{ id: TabId; label: string; missing?: number; hidden?: boolean }> = [
       { id: 'basics',     label: 'Basics',     missing: this._missingCountForTab('basics') },
       { id: 'categories', label: 'Categories', missing: this._missingCountForTab('categories') },
       { id: 'seo',        label: 'SEO',        missing: this._missingCountForTab('seo') },
+      { id: 'related',    label: 'Related',    missing: this._missingCountForTab('related'), hidden: !this._supportsRelated },
       { id: 'ai',         label: 'AI Context' },
       { id: 'advanced',   label: 'Advanced' },
     ]
+    const tabs = all.filter(t => !t.hidden)
     return html`
       <div class="px-5 pt-5 mt-2 border-t border-gray-100">
         <div class="relative -mx-5">
@@ -1272,7 +1283,22 @@ class FFApp extends LitElement {
           </div>
         </div>
 
-        ${this._supportsRelated ? this._renderRelatedResourcesPicker() : ''}
+      </div>
+    `
+  }
+
+  // ── Tab: Related resources (only for the 4 supported types) ───────────────
+  private _renderTabRelated() {
+    if (!this._supportsRelated) {
+      return html`
+        <div class="rounded-md border border-gray-200 bg-gray-50 p-4 text-center">
+          <p class="text-[12px] text-gray-500">Related resources aren't used for ${V2_TYPE_LABELS[this.contentType] ?? this.contentType}.</p>
+        </div>
+      `
+    }
+    return html`
+      <div class="flex flex-col gap-2" data-field="related">
+        ${this._renderRelatedResourcesPicker()}
       </div>
     `
   }
