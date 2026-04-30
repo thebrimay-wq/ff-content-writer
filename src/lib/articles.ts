@@ -419,6 +419,10 @@ function normalizeArticle(raw: RawArticle): ContentEntry {
     relatedResources: [],
     assignee: '',
     reviewNotes: '',
+    submittedForReviewAt: null,
+    reviewedBy: '',
+    reviewedAt: null,
+    publishedBy: '',
     deletedAt: null,
     creationMode: 'ai',
   }
