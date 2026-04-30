@@ -964,6 +964,7 @@ class FFApp extends LitElement {
     this._currentStatus = 'in_review'
     this._submittedForReviewAt = now
     this._refreshEntries()
+    this._maybeFireConfetti()
   }
 
   /** Save the reviewer's name + confirmation without publishing. Moves the
