@@ -295,14 +295,14 @@ class FFApp extends LitElement {
     }
   }
 
-  /** Coach cameo reveals when cursor enters bottom-right of the editor. */
+  /** Coach cameo reveals when cursor enters bottom-left of the editor. */
   private _onCameoMove = (e: MouseEvent) => {
     if (this.mode !== 'editor') {
       if (this._cameoVisible) this._cameoVisible = false
       return
     }
-    const w = window.innerWidth, h = window.innerHeight
-    const near = e.clientX > w - 220 && e.clientY > h - 220
+    const h = window.innerHeight
+    const near = e.clientX < 220 && e.clientY > h - 220
     if (near && !this._cameoVisible) {
       this._cameoVisible = true
       if (this._cameoHideTimer) { clearTimeout(this._cameoHideTimer); this._cameoHideTimer = null }
@@ -2172,7 +2172,7 @@ class FFApp extends LitElement {
     const photo = `${import.meta.env.BASE_URL}coaches/${slug}.png`
 
     return html`
-      <div class="fixed bottom-4 right-4 z-50 ff-fade-in flex flex-col items-end gap-2 pointer-events-none">
+      <div class="fixed bottom-4 left-4 z-50 ff-fade-in flex flex-col items-start gap-2 pointer-events-none">
         ${this._cameoBubbleOpen ? html`
           <div class="ff-greeting bg-white rounded-2xl shadow-xl border border-gray-200 px-4 py-3 max-w-[260px] pointer-events-auto">
             <p class="text-[11px] font-semibold tracking-wide text-gray-500 mb-1">${firstName} says</p>
