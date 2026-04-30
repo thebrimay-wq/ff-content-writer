@@ -3997,17 +3997,35 @@ class FFApp extends LitElement {
     // from `_articleBody()` rendered through marked. Skip when focused unless
     // we set the force flag (slash insert / undo / external content change
     // that must canonicalize the DOM mid-edit).
+    //
+    // We compare against `_lastSyncedBodyHtml` — NOT `editor.innerHTML`. The
+    // browser normalizes innerHTML on read (collapses whitespace, drops the
+    // trailing newline marked.parse appends, etc.), so a read-back compare
+    // produces a false-negative match every render. During AI streaming, Lit
+    // re-renders many times per chunk and the false negative caused us to
+    // tear down + rebuild the editor's DOM repeatedly per chunk — visible
+    // as flicker / content disappearing.
     if (this.contentType === 'article') {
       const editor = this.querySelector('[data-article-body="true"]') as HTMLElement | null
       if (editor) {
+        if (editor !== this._lastSyncedEditor) {
+          this._lastSyncedEditor = editor
+          this._lastSyncedBodyHtml = null
+        }
         const force = this._articleBodyForceSync
         this._articleBodyForceSync = false
         const isFocused = editor === active
         if (!isFocused || force) {
           const body = this._articleBody()
           const expected = body ? (marked.parse(body) as string) : '<p><br></p>'
-          if (editor.innerHTML !== expected) editor.innerHTML = expected
+          if (force || this._lastSyncedBodyHtml !== expected) {
+            editor.innerHTML = expected
+            this._lastSyncedBodyHtml = expected
+          }
         }
+      } else if (this._lastSyncedEditor) {
+        this._lastSyncedEditor = null
+        this._lastSyncedBodyHtml = null
       }
     }
   }
@@ -4016,6 +4034,10 @@ class FFApp extends LitElement {
   // editor's innerHTML even while it has focus (e.g. after a slash-block insert
   // or an undo) so any orphan DOM left behind by execCommand gets canonicalized.
   private _articleBodyForceSync = false
+  // Cache of the last HTML we wrote to the article body editor — see comment
+  // above; needed because innerHTML round-trips lossy.
+  private _lastSyncedBodyHtml: string | null = null
+  private _lastSyncedEditor: HTMLElement | null = null
 
   /** Sanitize anything pasted into a contenteditable surface — strip the
    *  Office/Word noise (namespaces, mso-* styles, classes, font tags,
