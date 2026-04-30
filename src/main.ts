@@ -192,6 +192,9 @@ class FFApp extends LitElement {
   // cancel.
   @state() private _aiFlipPromptOpen = false
 
+  // Sidebar region/language pill popover.
+  @state() private _regionPickerOpen = false
+
   // Responsive drawer state (only used below the `lg` breakpoint).
   @state() private _sidebarDrawerOpen = false
   @state() private _railDrawerOpen = false
@@ -219,9 +222,13 @@ class FFApp extends LitElement {
   }
 
   /** Close the toolbar Refine popover when the user clicks anywhere else. */
-  private _onDocClickCloseRefine = () => { if (this._refineOpen) this._refineOpen = false }
+  private _onDocClickCloseRefine = () => {
+    if (this._refineOpen) this._refineOpen = false
+    if (this._regionPickerOpen) this._regionPickerOpen = false
+  }
   private _onDocKeydownCloseRefine = (e: KeyboardEvent) => {
     if (e.key === 'Escape' && this._refineOpen) { this._refineOpen = false; this._refineCustom = '' }
+    if (e.key === 'Escape' && this._regionPickerOpen) { this._regionPickerOpen = false }
   }
 
   /** Warn when leaving with unsaved work in the local draft buffer. The
@@ -518,11 +525,12 @@ class FFApp extends LitElement {
     }
   }
 
-  // Sources / long-form are skipped when the writer has already curated them.
-  private async _autoExtractSources(ctx: GenerateRequest) {
+  // Sources / long-form are skipped when the writer has already curated them,
+  // unless `force` is true (user-clicked refresh).
+  private async _autoExtractSources(ctx: GenerateRequest, force = false) {
     if (!this.apiKey || !this.output.trim()) return
     const hasUserSources = this._sources.some(s => s.title.trim() || s.url.trim() || s.note.trim())
-    if (hasUserSources) return
+    if (hasUserSources && !force) return
     this._sourcesLoading = true
     try {
       const draft = this.contentType === 'article' ? stripPublishingSections(this.output) : this.output
@@ -554,9 +562,9 @@ class FFApp extends LitElement {
     }
   }
 
-  private async _autoExpandSeoArticle(ctx: GenerateRequest) {
+  private async _autoExpandSeoArticle(ctx: GenerateRequest, force = false) {
     if (!this.apiKey || !this.output.trim()) return
-    if (this._seoArticle.trim()) return
+    if (this._seoArticle.trim() && !force) return
     this._seoLoading = true
     try {
       const draft = this.contentType === 'article' ? stripPublishingSections(this.output) : this.output
@@ -664,6 +672,48 @@ class FFApp extends LitElement {
     } finally {
       this._metaDescriptionLoading = false
     }
+  }
+
+  /** Build a GenerateRequest from current state. Used by the per-field
+   *  "refresh from current draft" buttons in the right rail when the user
+   *  has changed direction in Write-it-myself and the auto-extracted
+   *  metadata is now stale. */
+  private _currentRequest(): GenerateRequest {
+    const last = this.lastRequest
+    return {
+      contentType: this.contentType,
+      audience: this.audience,
+      topic: this.topic || (last?.topic ?? ''),
+      notes: this.notes || (last?.notes ?? ''),
+      expertSources: this.expertSources,
+      seoArticle: this._seoArticle,
+      ...(this.contentType === 'quiz' ? { quizType: this._quizTypeChoice } : {}),
+    }
+  }
+
+  /** Re-extract a single auto-extractable field from the current draft.
+   *  Honors the existing per-field guards (no apiKey, no output, etc).
+   *  Triggered explicitly by user from a small refresh icon next to each
+   *  field, so it's safe to overwrite even when the field is non-empty. */
+  private _refreshExcerptFromDraft() {
+    if (!this.output.trim()) return
+    if (!this.apiKey) { this.showKeyPrompt = true; this.keyDraft = ''; return }
+    void this._autoExtractExcerpt(this._currentRequest())
+  }
+  private _refreshMetaDescriptionFromDraft() {
+    if (!this.output.trim()) return
+    if (!this.apiKey) { this.showKeyPrompt = true; this.keyDraft = ''; return }
+    void this._autoExtractMetaDescription(this._currentRequest())
+  }
+  private _refreshSeoArticleFromDraft() {
+    if (!this.output.trim()) return
+    if (!this.apiKey) { this.showKeyPrompt = true; this.keyDraft = ''; return }
+    void this._autoExpandSeoArticle(this._currentRequest(), true)
+  }
+  private _refreshSourcesFromDraft() {
+    if (!this.output.trim()) return
+    if (!this.apiKey) { this.showKeyPrompt = true; this.keyDraft = ''; return }
+    void this._autoExtractSources(this._currentRequest(), true)
   }
 
   private async _refine(instruction: string) {
@@ -1269,6 +1319,27 @@ class FFApp extends LitElement {
     `
   }
 
+  /** Small "refresh from current draft" icon button rendered next to each
+   *  AI-extracted field (excerpt, meta description, long-form source,
+   *  sources). Disabled when there's no draft to extract from or when the
+   *  field is currently being re-extracted. */
+  private _renderRefreshFromDraft(opts: { loading: boolean; onClick: () => void; title: string }) {
+    const disabled = opts.loading || !this.output.trim() || this.isGenerating
+    return html`
+      <button
+        @click=${opts.onClick}
+        ?disabled=${disabled}
+        title=${opts.title}
+        aria-label=${opts.title}
+        class="inline-flex items-center gap-1 text-[10.5px] font-semibold transition-colors px-1.5 py-0.5 rounded ${disabled ? 'text-gray-300 cursor-not-allowed' : 'text-[#063853] hover:bg-gray-100'}">
+        <svg width="10" height="10" viewBox="0 0 12 12" fill="none" class="${opts.loading ? 'animate-spin' : ''}">
+          <path d="M10.5 6a4.5 4.5 0 11-1.32-3.18M10.5 1.5V4H8" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        ${opts.loading ? 'Refreshing…' : 'Refresh from draft'}
+      </button>
+    `
+  }
+
   // ── Tab: Basics ────────────────────────────────────────────────────────────
   private _renderTabBasics() {
     const fld = (key: string) => this._highlightedField === key ? 'ff-field-pulse' : ''
@@ -1293,7 +1364,10 @@ class FFApp extends LitElement {
         </div>
 
         <div class="flex flex-col gap-1" data-field="excerpt">
-          <label class="text-[11px] font-semibold text-gray-700">One-sentence summary <span class="text-red-500">*</span></label>
+          <div class="flex items-center justify-between">
+            <label class="text-[11px] font-semibold text-gray-700">One-sentence summary <span class="text-red-500">*</span></label>
+            ${this._renderRefreshFromDraft({ loading: this._excerptLoading, onClick: () => this._refreshExcerptFromDraft(), title: 'Re-write summary from current draft' })}
+          </div>
           ${this._excerptLoading && !this._excerpt ? html`
             <div class="rounded-md border border-dashed border-gray-200 px-3 py-3 text-center">
               <p class="text-[11px] text-gray-400">Writing summary from draft…</p>
@@ -1574,7 +1648,10 @@ class FFApp extends LitElement {
         </div>
 
         <div class="flex flex-col gap-1" data-field="metaDescription">
-          <label class="text-[11px] font-semibold text-gray-700">Meta description <span class="text-red-500">*</span></label>
+          <div class="flex items-center justify-between">
+            <label class="text-[11px] font-semibold text-gray-700">Meta description <span class="text-red-500">*</span></label>
+            ${this._renderRefreshFromDraft({ loading: this._metaDescriptionLoading, onClick: () => this._refreshMetaDescriptionFromDraft(), title: 'Re-write meta description from current draft' })}
+          </div>
           ${this._metaDescriptionLoading && !this._metaDescription ? html`
             <div class="rounded-md border border-dashed border-gray-200 px-3 py-3 text-center">
               <p class="text-[11px] text-gray-400">Writing meta description…</p>
@@ -1638,12 +1715,15 @@ class FFApp extends LitElement {
     return html`
       <div class="flex flex-col gap-4">
         <div class="flex flex-col gap-2">
-          <div class="flex items-center justify-between">
+          <div class="flex items-center justify-between gap-2">
             <p class="text-[11px] font-semibold text-gray-700">Long-form source</p>
-            ${this._seoArticle ? html`
-              <button @click=${() => navigator.clipboard?.writeText(this._seoArticle)}
-                class="text-[10.5px] text-[#063853] font-semibold hover:underline">Copy</button>
-            ` : ''}
+            <div class="flex items-center gap-2">
+              ${this._renderRefreshFromDraft({ loading: this._seoLoading, onClick: () => this._refreshSeoArticleFromDraft(), title: 'Re-expand long-form source from current draft' })}
+              ${this._seoArticle ? html`
+                <button @click=${() => navigator.clipboard?.writeText(this._seoArticle)}
+                  class="text-[10.5px] text-[#063853] font-semibold hover:underline">Copy</button>
+              ` : ''}
+            </div>
           </div>
           <p class="text-[11px] text-gray-500 leading-snug">Auto-expanded from the draft after AI generation. Paste your own to override — when set, the AI uses it as the primary factual basis on the next generate / refine.</p>
           ${this._seoLoading && !this._seoArticle ? html`
@@ -1661,10 +1741,13 @@ class FFApp extends LitElement {
         </div>
 
         <div class="flex flex-col gap-2 pt-3 border-t border-gray-100">
-          <div class="flex items-center justify-between">
+          <div class="flex items-center justify-between gap-2">
             <p class="text-[11px] font-semibold text-gray-700">Sources</p>
-            <button @click=${() => this._addSource()}
-              class="text-[11px] text-[#063853] hover:underline font-semibold">+ Add</button>
+            <div class="flex items-center gap-2">
+              ${this._renderRefreshFromDraft({ loading: this._sourcesLoading, onClick: () => this._refreshSourcesFromDraft(), title: 'Re-extract sources from current draft' })}
+              <button @click=${() => this._addSource()}
+                class="text-[11px] text-[#063853] hover:underline font-semibold">+ Add</button>
+            </div>
           </div>
           <p class="text-[11px] text-gray-500 leading-snug">Auto-populated after AI generation. Edit or add your own.</p>
           ${this._sourcesLoading ? html`
@@ -2056,11 +2139,48 @@ class FFApp extends LitElement {
           aria-hidden=${sidebarOpen ? 'false' : 'true'}>
           <div class="flex flex-col p-7 gap-6 min-h-full">
 
-            <!-- Region pill (display-only — chosen at the gate) -->
-            <div class="self-start inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-gray-50 border border-gray-200 cursor-default select-none"
-              title="Region & language are set when you start a new draft.">
-              <span class="text-[14px] leading-none">${regionFlag(this.region)}</span>
-              <span class="text-[12px] font-semibold tracking-wide text-gray-700">${regionShort(this.region)} · ${langShort(this.language)}</span>
+            <!-- Region pill — clickable; opens a small popover to change region / language. -->
+            <div class="relative self-start" @click=${(e: Event) => e.stopPropagation()}>
+              <button
+                @click=${() => { this._regionPickerOpen = !this._regionPickerOpen }}
+                aria-expanded=${this._regionPickerOpen ? 'true' : 'false'}
+                aria-haspopup="dialog"
+                title="Change region & language"
+                class="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-gray-50 border border-gray-200 hover:border-gray-300 hover:bg-white transition-colors">
+                <span class="text-[14px] leading-none">${regionFlag(this.region)}</span>
+                <span class="text-[12px] font-semibold tracking-wide text-gray-700">${regionShort(this.region)} · ${langShort(this.language)}</span>
+                <svg class="text-gray-400" width="9" height="9" viewBox="0 0 12 12" fill="none">
+                  <path d="M3 5l3 3 3-3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+              </button>
+              ${this._regionPickerOpen ? html`
+                <div role="dialog" aria-label="Region and language"
+                  class="absolute left-0 top-full mt-1.5 z-30 w-[260px] rounded-xl border border-gray-200 bg-white shadow-lg p-3 ff-fade-in">
+                  <p class="text-[10px] font-bold tracking-widest uppercase text-gray-400 mb-2">Writing for</p>
+                  <div class="grid grid-cols-2 gap-2">
+                    <div class="flex flex-col gap-1">
+                      <label class="text-[10px] font-semibold tracking-wider uppercase text-gray-500">Region</label>
+                      <select .value=${this.region}
+                        @change=${(e: Event) => { this.region = (e.target as HTMLSelectElement).value; this.isDirty = true }}
+                        class="w-full rounded-md border border-gray-200 bg-white px-2 py-1.5 text-[12px] outline-none focus:border-gray-400 cursor-pointer">
+                        <option>United States</option><option>Canada</option><option>United Kingdom</option>
+                      </select>
+                    </div>
+                    <div class="flex flex-col gap-1">
+                      <label class="text-[10px] font-semibold tracking-wider uppercase text-gray-500">Language</label>
+                      <select .value=${this.language}
+                        @change=${(e: Event) => { this.language = (e.target as HTMLSelectElement).value; this.isDirty = true }}
+                        class="w-full rounded-md border border-gray-200 bg-white px-2 py-1.5 text-[12px] outline-none focus:border-gray-400 cursor-pointer">
+                        <option>English</option><option>Spanish</option>
+                      </select>
+                    </div>
+                  </div>
+                  <div class="flex justify-end mt-3">
+                    <button @click=${() => { this._regionPickerOpen = false }}
+                      class="text-[11px] font-semibold px-3 py-1.5 rounded-md bg-[#063853] hover:bg-[#04293D] text-white">Done</button>
+                  </div>
+                </div>
+              ` : ''}
             </div>
 
             <!-- Mode flip: Blank ↔ With AI -->
