@@ -2277,15 +2277,6 @@ class FFApp extends LitElement {
               class="text-[11px] font-semibold px-2.5 py-1 rounded-md transition-colors whitespace-nowrap ${this.apiKey ? 'text-emerald-600 bg-emerald-50 hover:bg-emerald-100' : 'text-gray-400 bg-gray-100 hover:bg-gray-200'}"
               title="Update Anthropic API key"
             >${this.apiKey ? 'Key set' : 'API key'}</button>
-            <button
-              @click=${() => this._newContent()}
-              class="inline-flex items-center gap-1.5 text-[12px] font-semibold px-3 py-1.5 rounded-lg bg-[#063853] hover:bg-[#04293D] text-white whitespace-nowrap"
-              aria-label="Start a new draft"
-            >
-              <svg width="11" height="11" viewBox="0 0 11 11" fill="none"><path d="M5.5 1v9M1 5.5h9" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
-              <span class="hidden sm:inline">New content</span>
-              <span class="sm:hidden">New</span>
-            </button>
             ${this.tab === 'new' && this.mode === 'editor' ? html`
               <!-- Right-rail drawer toggle (visible only below lg) -->
               <button
