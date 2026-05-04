@@ -228,6 +228,12 @@ class FFApp extends LitElement {
     super.connectedCallback()
     this._refreshEntries()
     this._initCameo()
+    // First-visit help auto-open. Tagged in localStorage so returning users
+    // aren't pestered. Slight delay so the gate has rendered first.
+    if (!localStorage.getItem('ff_help_seen_v1')) {
+      setTimeout(() => { this._helpOpen = true }, 700)
+      localStorage.setItem('ff_help_seen_v1', '1')
+    }
     window.addEventListener('beforeunload', this._onBeforeUnload)
     window.addEventListener('resize', this._onResize)
     document.addEventListener('click', this._onDocClickCloseRefine)
@@ -255,6 +261,7 @@ class FFApp extends LitElement {
   private _onDocKeydownCloseRefine = (e: KeyboardEvent) => {
     if (e.key === 'Escape' && this._refineOpen) { this._refineOpen = false; this._refineCustom = '' }
     if (e.key === 'Escape' && this._regionPickerOpen) { this._regionPickerOpen = false }
+    if (e.key === 'Escape' && this._helpOpen) { this._helpOpen = false }
   }
 
   // ── Easter eggs: handlers ────────────────────────────────────────────────
@@ -2273,6 +2280,16 @@ class FFApp extends LitElement {
           </div>
           <div class="flex items-center gap-2 sm:gap-3">
             <button
+              @click=${() => { this._helpOpen = true }}
+              title="How to use this"
+              class="w-8 h-8 flex items-center justify-center rounded-full text-gray-400 hover:text-[#063853] hover:bg-gray-100 transition-colors">
+              <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                <circle cx="7" cy="7" r="6" stroke="currentColor" stroke-width="1.4"/>
+                <path d="M5 5.2a2 2 0 014 0c0 .8-.5 1.2-1.2 1.5-.6.3-.8.6-.8 1" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+                <circle cx="7" cy="10.2" r="0.7" fill="currentColor"/>
+              </svg>
+            </button>
+            <button
               @click=${() => { this.keyDraft = this.apiKey; this.showKeyPrompt = true }}
               class="text-[11px] font-semibold px-2.5 py-1 rounded-md transition-colors whitespace-nowrap ${this.apiKey ? 'text-emerald-600 bg-emerald-50 hover:bg-emerald-100' : 'text-gray-400 bg-gray-100 hover:bg-gray-200'}"
               title="Update Anthropic API key"
@@ -2306,7 +2323,126 @@ class FFApp extends LitElement {
         ${this._renderSparkles()}
         ${this._renderGateGreeting()}
         ${this._renderCameo()}
+        ${this._renderHelp()}
       </div>
+    `
+  }
+
+  // ── Help / how-to modal ──────────────────────────────────────────────────
+  private _renderHelp() {
+    if (!this._helpOpen) return ''
+    return html`
+      <div class="fixed inset-0 z-[60] bg-black/40 flex items-center justify-center px-4 py-6"
+        @click=${(e: Event) => { if (e.target === e.currentTarget) this._helpOpen = false }}>
+        <div class="bg-white rounded-2xl shadow-2xl max-w-[760px] w-full max-h-[88vh] flex flex-col ff-fade-in">
+
+          <div class="flex items-center justify-between px-6 py-4 border-b border-gray-100 shrink-0">
+            <div class="flex items-center gap-3">
+              <span class="w-8 h-8 rounded-full flex items-center justify-center bg-violet-50 text-violet-600">
+                <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><circle cx="7" cy="7" r="6" stroke="currentColor" stroke-width="1.4"/><path d="M5 5.2a2 2 0 014 0c0 .8-.5 1.2-1.2 1.5-.6.3-.8.6-.8 1" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><circle cx="7" cy="10.2" r="0.7" fill="currentColor"/></svg>
+              </span>
+              <div>
+                <h2 class="text-[16px] font-semibold text-[#1a1a1a] leading-tight">How to use the AI Content Writer</h2>
+                <p class="text-[11px] text-gray-400">Five-minute read · ⌘+? to reopen anytime</p>
+              </div>
+            </div>
+            <button @click=${() => { this._helpOpen = false }}
+              title="Close (Esc)"
+              class="text-gray-400 hover:text-gray-700 text-[22px] leading-none w-8 h-8 flex items-center justify-center rounded-full hover:bg-gray-100">×</button>
+          </div>
+
+          <div class="flex-1 overflow-y-auto scrollbar-thin px-7 py-6 ff-prose">
+            ${this._renderHelpBody()}
+          </div>
+
+          <div class="flex items-center justify-between px-6 py-3 border-t border-gray-100 shrink-0 gap-3">
+            <p class="text-[11px] text-gray-400">Open this anytime from the <span class="inline-flex items-center justify-center w-4 h-4 rounded-full border border-gray-300 text-[10px] mx-0.5">?</span> in the top bar.</p>
+            <button @click=${() => { this._helpOpen = false }}
+              class="text-[12px] font-semibold px-4 py-2 rounded-lg bg-[#063853] hover:bg-[#04293D] text-white">
+              Got it
+            </button>
+          </div>
+        </div>
+      </div>
+    `
+  }
+
+  private _renderHelpBody() {
+    const kbd = (t: string) => html`<span class="font-mono text-[12px] px-1.5 py-0.5 rounded bg-gray-100 text-gray-700">${t}</span>`
+    return html`
+      <p style="font-size:15px;color:#383838;line-height:1.65;margin-top:0;">
+        The AI Content Writer is the writing space for Financial Finesse content. You type a topic and a first draft appears in our voice. You edit it like a Notion page. You ship it to the hub. The whole loop, in one tab.
+      </p>
+
+      <h2>The first time you open it</h2>
+      <p>When you click <strong>Generate</strong> for the first time, the app asks for your Anthropic API key. Paste it once and it's saved on your browser. Each person on the team uses their own key — the keys aren't shared. If you've already used the live tool, your key is already there and you won't see the prompt.</p>
+
+      <h2>Starting a piece</h2>
+      <p>You'll land on the <em>How do you want to start?</em> screen. Pick <strong>Draft with AI</strong> for an AI first draft, or <strong>Write it myself</strong> for a blank page. Below the cards, confirm region (US / Canada / UK) and language — most pieces are US English so you'll usually leave these alone. Click and the editor opens.</p>
+
+      <h2>The sidebar on the left</h2>
+      <p>A small region pill at the top, then a <strong>Blank ↔ With AI</strong> toggle. Flip back and forth at any time without losing work. <strong>Content type</strong> chooses what you're making (Article, Money tip, Checklist, Quiz, Expert insight, User story, Video, Calculator, Infographic). <strong>Audience</strong> sets the tone (All users · Crisis · Struggling · Planning · Optimizing). <strong>Topic</strong> is what the piece is about. <strong>Notes</strong> (optional) steers the draft — stats, voice direction, existing copy. Hit <strong>Generate draft</strong> or press ${kbd('⌘ + Enter')}.</p>
+
+      <h2>Editing what you got</h2>
+      <p>The center pane is your draft. Everything is editable inline — title, headings, body. Just click and type.</p>
+
+      <h3>Slash commands for blocks</h3>
+      <p>Type ${kbd('/')} anywhere in the body and a menu pops up: Heading, Subheading, Bulleted list, Numbered list, Quote, Divider, Table. Arrow keys to navigate, Enter to insert. Keep typing after the / to filter — ${kbd('/head')} jumps straight to Heading. There's also a <strong>+ Add block</strong> button at the bottom of the article.</p>
+
+      <h3>Highlight text to format or rewrite</h3>
+      <p>Select any text. A small toolbar appears next to your selection. Top row is quick formatting: T (paragraph), H (heading), h (subheading), B/I/U/Strikethrough, link icon, internal article link. Below that, the AI section: <em>Improve writing · Proofread · Make warmer · Make shorter · Simpler language · Explain</em>. Click any one and the AI rewrites just your selection. A Before/After card pops up at the top — Accept swaps it in, Reject keeps the original. Or type your own instruction in <strong>Edit with AI</strong>.</p>
+
+      <h3>Tables</h3>
+      <p>Click into any cell. A mini-toolbar appears above the table: <em>+ Row above / + Row below / + Col left / + Col right / − Row / − Col</em>. Tables span the full width with visible borders.</p>
+
+      <h3>Pasting from Word</h3>
+      <p>Just paste. The app strips Word's noise (extra styles, font tags, hidden classes) and keeps only the structure that matters: paragraphs, headings, lists, bold/italic, links.</p>
+
+      <h3>Linking to another internal article</h3>
+      <p>Highlight some text. In the toolbar, click the small document-with-lines icon (right after the regular link icon). A modal opens with every article in your library. Search by title or topic. Click one to wrap your selection in an internal link.</p>
+
+      <h3>Undo / Redo</h3>
+      <p>Two arrows at the top of the center pane, or ${kbd('⌘ + Z')} / ${kbd('⌘ + Shift + Z')}. Every meaningful change is undoable.</p>
+
+      <h2>Each content type has its own rhythm</h2>
+      <p><strong>Article</strong> — title section + body, with auto-calculated read time. Two heading levels for sections (Heading + Subheading).</p>
+      <p><strong>Money tip</strong> — a stack of slides (the carousel that runs in the hub). Each slide has heading + body. <em>+ Add slide</em> at the bottom. Hover any slide for Remove. Select text in the title and the toolbar shows a yellow <strong>A</strong> button — that's the highlight tool, which marks specific words to render with emphasis on the front end.</p>
+      <p><strong>Checklist</strong> — sections with items inside. Hover any item for ×. <em>+ Add item</em> per section, <em>+ Add section</em> at the bottom.</p>
+      <p><strong>Quiz</strong> — questions with lettered answers. <em>+ Add answer</em> per question, <em>+ Add question</em> at the bottom.</p>
+      <p><strong>Expert insight</strong> — coach voice cards with a real coach photo, a planner dropdown, and an editable body. <em>+ Add coach section</em> for another voice.</p>
+      <p><strong>User story</strong> — title, optional subtitle, body.</p>
+      <p><strong>Video</strong> — title, video URL, optional description.</p>
+      <p><strong>Calculator</strong> — title, embed code, optional description.</p>
+      <p><strong>Infographic</strong> — title, image upload (or paste a URL).</p>
+
+      <h2>Saving and publishing</h2>
+      <p>Two buttons in the right rail. <strong>Save to library</strong> keeps it as a Draft. <strong>Publish this</strong> moves the status to Published. The status pill shows where you are: Draft · saved, Draft · unsaved, Generating…, Published. Below those, <strong>Quick refine</strong> rewrites the whole piece (Make warmer · Shorten · More professional · Simpler language).</p>
+
+      <h2>Finding past pieces (Library tab)</h2>
+      <p>Click <strong>Library</strong> at the top. Every saved or published piece is here, with title, type, audience, status, and last-edited time. Pieces with multiple regional or client variants group into one expandable row — click the chevron to see versions.</p>
+
+      <h2>Source view (admin)</h2>
+      <p>The small <code>&lt;&gt;</code> icon in the editor's top toolbar flips between Editing and HTML. The HTML view shows the raw markup or JSON the front end will receive. Useful for QA.</p>
+
+      <h2>Keyboard shortcuts</h2>
+      <ul>
+        <li>${kbd('⌘ + Enter')} — generate the draft from the topic field</li>
+        <li>${kbd('⌘ + S')} — save anytime</li>
+        <li>${kbd('⌘ + Z')} / ${kbd('⌘ + Shift + Z')} — undo / redo</li>
+        <li>${kbd('Esc')} — close any open menu</li>
+        <li>${kbd('/')} — open the block menu (then type to filter)</li>
+      </ul>
+
+      <h2>When something feels stuck</h2>
+      <ul>
+        <li>Draft came out weird? Click Quick refine, or regenerate.</li>
+        <li>Toolbar appeared but won't go away? Click outside it or press Esc.</li>
+        <li>Don't see the toolbar? You need to highlight at least four characters.</li>
+        <li>Publish is grayed out? Generate or write a draft first.</li>
+        <li>Library row won't open? Hard refresh (${kbd('⌘ + Shift + R')}) — your browser may be holding an old bundle.</li>
+      </ul>
+
+      <p style="margin-top:24px;font-style:italic;color:#7c70e3;font-size:13px;text-align:center;">Make room for what matters.</p>
     `
   }
 
@@ -4514,6 +4650,9 @@ class FFApp extends LitElement {
   // Active table cell — drives the table-editing mini-toolbar.
   @state() private _tableCell: HTMLTableCellElement | null = null
   @state() private _tableRect: DOMRect | null = null
+
+  // ── Help / how-to modal ─────────────────────────────────────────────────
+  @state() private _helpOpen = false
 
   // ── Easter eggs ──────────────────────────────────────────────────────────
   @state() private _confettiPieces: Array<{ id: number; left: number; delay: number; bg: string; dur: number }> = []

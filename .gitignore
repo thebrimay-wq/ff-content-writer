@@ -8,6 +8,7 @@ dist/
 .env
 .env.*
 *.rtf
+*.docx
 
 # Editor / OS
 .DS_Store
