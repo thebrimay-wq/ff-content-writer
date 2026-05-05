@@ -3426,7 +3426,119 @@ class FFApp extends LitElement {
     `
   }
 
+  // ── Asset mode (Upload vs AI Brainstorm) ───────────────────────────────────
+  // Video, Calculator, and Infographic each support two authoring modes,
+  // toggled by tabs at the top of the canvas:
+  //   • upload — paste a real asset (Vimeo URL, embed snippet, finished image)
+  //   • ai     — capture concept + visual direction so AI (or a designer)
+  //              can build the asset from a brief
+  // Mode + brainstorm fields persist on `_extras` so the schema stays clean.
+  private _getAssetMode(c: any | null): 'upload' | 'ai' {
+    return ((c?._extras?.asset_mode as string) === 'ai') ? 'ai' : 'upload'
+  }
+  private _setAssetMode(mode: 'upload' | 'ai') {
+    this._updateJson<any>(c => ({ ...c, _extras: { ...(c._extras ?? {}), asset_mode: mode } }))
+  }
+  private _getBrainstorm(c: any | null): Record<string, string> {
+    return (c?._extras?.brainstorm as Record<string, string>) ?? {}
+  }
+  private _setBrainstormField(field: string, value: string) {
+    this._updateJson<any>(c => ({
+      ...c,
+      _extras: {
+        ...(c._extras ?? {}),
+        brainstorm: { ...((c._extras?.brainstorm as Record<string, string>) ?? {}), [field]: value },
+      },
+    }))
+  }
+
+  /** Pill-tab strip that swaps the canvas between Upload and AI Brainstorm. */
+  private _renderAssetTabs(mode: 'upload' | 'ai') {
+    const base = 'flex-1 inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg text-[13px] font-semibold transition-all'
+    const on   = 'bg-white text-[#063853] shadow-[0_1px_2px_rgba(6,56,83,0.06),0_2px_8px_rgba(6,56,83,0.04)]'
+    const off  = 'text-gray-500 hover:text-gray-700'
+    return html`
+      <div class="inline-flex w-full p-1 rounded-xl bg-gray-100/80 border border-gray-200/60 mb-7">
+        <button role="tab" aria-selected=${mode === 'upload'}
+          @click=${() => this._setAssetMode('upload')}
+          class="${base} ${mode === 'upload' ? on : off}">
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+            <path d="M7 9V2m0 0L4 5m3-3 3 3M2 11h10" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          Upload existing
+        </button>
+        <button role="tab" aria-selected=${mode === 'ai'}
+          @click=${() => this._setAssetMode('ai')}
+          class="${base} ${mode === 'ai' ? on : off}">
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+            <path d="M7 1.5 8.2 5l3.3.4-2.5 2.4.7 3.3L7 9.5l-2.7 1.6.7-3.3-2.5-2.4L5.8 5 7 1.5Z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/>
+          </svg>
+          Brainstorm with AI
+        </button>
+      </div>
+    `
+  }
+
+  /** A single labeled brainstorm input. `multiline` swaps to a textarea. */
+  private _renderBrainstormField(opts: {
+    label: string
+    field: string
+    value: string
+    placeholder: string
+    hint?: string
+    multiline?: boolean
+    rows?: number
+  }) {
+    const commit = (e: Event) => this._setBrainstormField(opts.field, (e.target as HTMLInputElement | HTMLTextAreaElement).value)
+    return html`
+      <div class="flex flex-col gap-1.5">
+        <label class="text-[10px] font-bold tracking-widest uppercase text-gray-500">${opts.label}</label>
+        ${opts.hint ? html`<p class="text-[11px] text-gray-400 -mt-1">${opts.hint}</p>` : ''}
+        ${opts.multiline ? html`
+          <textarea
+            ?disabled=${this.isGenerating}
+            .value=${opts.value}
+            @blur=${commit}
+            placeholder=${opts.placeholder}
+            rows=${opts.rows ?? 3}
+            class="w-full rounded-lg border border-gray-200 bg-white px-3.5 py-2.5 text-[13.5px] leading-relaxed outline-none focus:border-gray-400 resize-none"></textarea>
+        ` : html`
+          <input type="text"
+            ?disabled=${this.isGenerating}
+            .value=${opts.value}
+            @blur=${commit}
+            placeholder=${opts.placeholder}
+            class="w-full rounded-lg border border-gray-200 bg-white px-3.5 py-2.5 text-[13.5px] outline-none focus:border-gray-400" />
+        `}
+      </div>
+    `
+  }
+
+  /** Wraps "visual direction" fields in a distinct card so they read as a
+   *  separate section of the brainstorm. Same field renderer, themed shell. */
+  private _renderVisualDirectionCard(children: unknown) {
+    return html`
+      <div class="relative rounded-2xl border border-amber-200/60 bg-gradient-to-br from-amber-50/50 via-white to-white p-5">
+        <div class="flex items-center gap-2 mb-1">
+          <span class="inline-flex items-center justify-center w-6 h-6 rounded-md bg-[#063853] text-white">
+            <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+              <circle cx="6" cy="6" r="2" stroke="currentColor" stroke-width="1.4"/>
+              <path d="M6 1v1.5M6 9.5V11M1 6h1.5M9.5 6H11M2.5 2.5l1.05 1.05M8.45 8.45 9.5 9.5M2.5 9.5l1.05-1.05M8.45 3.55 9.5 2.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+            </svg>
+          </span>
+          <p class="text-[11px] font-bold tracking-widest uppercase text-[#063853]">Visual direction</p>
+        </div>
+        <p class="text-[12px] text-gray-500 mb-4">How should it look and feel? These notes go to the designer or image model.</p>
+        <div class="flex flex-col gap-4">
+          ${children}
+        </div>
+      </div>
+    `
+  }
+
   private _renderVideo(v: any | null) {
+    const mode = this._getAssetMode(v)
+    const b = this._getBrainstorm(v)
     return html`
       <div class="flex-1 overflow-y-auto scrollbar-thin">
         <div class="mx-auto max-w-[720px] px-4 sm:px-8 lg:px-12 py-6 lg:py-10 ${this.isGenerating ? 'ff-stream-cursor' : ''}" data-rewrite="true">
@@ -3437,36 +3549,86 @@ class FFApp extends LitElement {
             onCommit: (t) => this._setSimpleField('title', t),
           })}
 
-          <div class="flex flex-col gap-1.5 mb-5">
-            <label class="text-[10px] font-bold tracking-widest uppercase text-gray-500">Video URL</label>
-            <input type="url"
-              .value=${v?.reference_link ?? ''}
-              @blur=${(e: Event) => this._setSimpleField('reference_link', (e.target as HTMLInputElement).value.trim())}
-              placeholder="https://vimeo.com/… or video ID"
-              class="w-full rounded-lg border border-gray-200 bg-white px-3.5 py-2.5 text-[14px] outline-none focus:border-gray-400" />
-            ${v?.reference_link ? html`
-              <p class="text-[11px] text-gray-400 mt-1">Saved · <span class="font-mono">${v.reference_link}</span></p>
-            ` : ''}
-          </div>
+          ${this._renderAssetTabs(mode)}
 
-          <div class="mb-5">
-            ${this._renderImageUploader({
-              label: 'Thumbnail',
-              value: v?.thumbnail_image ?? '',
-              onChange: (val) => this._setSimpleField('thumbnail_image', val),
-              onRemove: () => this._setSimpleField('thumbnail_image', ''),
-            })}
-          </div>
+          ${mode === 'upload' ? html`
+            <div class="flex flex-col gap-1.5 mb-5">
+              <label class="text-[10px] font-bold tracking-widest uppercase text-gray-500">Video URL</label>
+              <input type="url"
+                .value=${v?.reference_link ?? ''}
+                @blur=${(e: Event) => this._setSimpleField('reference_link', (e.target as HTMLInputElement).value.trim())}
+                placeholder="https://vimeo.com/… or video ID"
+                class="w-full rounded-lg border border-gray-200 bg-white px-3.5 py-2.5 text-[14px] outline-none focus:border-gray-400" />
+              ${v?.reference_link ? html`
+                <p class="text-[11px] text-gray-400 mt-1">Saved · <span class="font-mono">${v.reference_link}</span></p>
+              ` : ''}
+            </div>
 
-          <div class="flex flex-col gap-1.5">
-            <label class="text-[10px] font-bold tracking-widest uppercase text-gray-500">Description <span class="font-normal normal-case tracking-normal text-gray-400">(optional)</span></label>
-            <div
-              data-placeholder="What's this video about?"
-              class="ff-prose outline-none rounded-lg border border-gray-200 bg-white px-3.5 py-2.5 min-h-[120px] focus:border-gray-400"
-              contenteditable=${this.isGenerating ? 'false' : 'true'}
-              @blur=${(e: Event) => this._setSimpleField('copy', (e.target as HTMLElement).innerHTML)}
-            >${unsafeHTML(v?.copy ?? '')}</div>
-          </div>
+            <div class="mb-5">
+              ${this._renderImageUploader({
+                label: 'Thumbnail',
+                value: v?.thumbnail_image ?? '',
+                onChange: (val) => this._setSimpleField('thumbnail_image', val),
+                onRemove: () => this._setSimpleField('thumbnail_image', ''),
+              })}
+            </div>
+
+            <div class="flex flex-col gap-1.5">
+              <label class="text-[10px] font-bold tracking-widest uppercase text-gray-500">Description <span class="font-normal normal-case tracking-normal text-gray-400">(optional)</span></label>
+              <div
+                data-placeholder="What's this video about?"
+                class="ff-prose outline-none rounded-lg border border-gray-200 bg-white px-3.5 py-2.5 min-h-[120px] focus:border-gray-400"
+                contenteditable=${this.isGenerating ? 'false' : 'true'}
+                @blur=${(e: Event) => this._setSimpleField('copy', (e.target as HTMLElement).innerHTML)}
+              >${unsafeHTML(v?.copy ?? '')}</div>
+            </div>
+          ` : html`
+            <div class="flex flex-col gap-5">
+              ${this._renderBrainstormField({
+                label: 'Concept', field: 'concept', value: b.concept ?? '', multiline: true,
+                hint: 'What is this video about? One or two sentences.',
+                placeholder: 'A 60-second explainer on why an emergency fund beats a credit card…',
+              })}
+              <div class="grid grid-cols-2 gap-4">
+                ${this._renderBrainstormField({
+                  label: 'Target length', field: 'length', value: b.length ?? '',
+                  placeholder: '60 seconds',
+                })}
+                ${this._renderBrainstormField({
+                  label: 'Format', field: 'format', value: b.format ?? '',
+                  placeholder: 'Vertical short / talking head / motion',
+                })}
+              </div>
+              ${this._renderBrainstormField({
+                label: 'Hook (first 3 seconds)', field: 'hook', value: b.hook ?? '', multiline: true, rows: 2,
+                placeholder: `"Most people think a credit card IS an emergency fund. Here's why that's a trap…"`,
+              })}
+              ${this._renderBrainstormField({
+                label: 'Key talking points', field: 'talking_points', value: b.talking_points ?? '', multiline: true, rows: 4,
+                placeholder: '1. Why $1k is the starter goal\n2. Where to park it\n3. When to actually use it',
+              })}
+              ${this._renderBrainstormField({
+                label: 'Call to action', field: 'cta', value: b.cta ?? '',
+                placeholder: 'Open a high-yield savings account today.',
+              })}
+
+              ${this._renderVisualDirectionCard(html`
+                ${this._renderBrainstormField({
+                  label: 'Style & mood', field: 'visual_style', value: b.visual_style ?? '', multiline: true, rows: 2,
+                  placeholder: 'Warm, optimistic, confident. FF brand teal + cream. Soft natural lighting.',
+                })}
+                ${this._renderBrainstormField({
+                  label: 'On-screen graphics & B-roll', field: 'visual_broll', value: b.visual_broll ?? '', multiline: true, rows: 3,
+                  placeholder: `Animated number counters; cut to phone screen showing savings app; chart line rising over the host's shoulder.`,
+                })}
+                ${this._renderBrainstormField({
+                  label: 'Thumbnail concept', field: 'visual_thumbnail', value: b.visual_thumbnail ?? '',
+                  placeholder: 'Host pointing at bold "$1,000" overlay on teal background',
+                })}
+              `)}
+            </div>
+          `}
+
           ${this._renderRelatedResources(v?.related_resources ?? [])}
         </div>
       </div>
@@ -3474,6 +3636,8 @@ class FFApp extends LitElement {
   }
 
   private _renderCalculator(c: any | null) {
+    const mode = this._getAssetMode(c)
+    const b = this._getBrainstorm(c)
     return html`
       <div class="flex-1 overflow-y-auto scrollbar-thin">
         <div class="mx-auto max-w-[720px] px-4 sm:px-8 lg:px-12 py-6 lg:py-10 ${this.isGenerating ? 'ff-stream-cursor' : ''}" data-rewrite="true">
@@ -3484,35 +3648,79 @@ class FFApp extends LitElement {
             onCommit: (t) => this._setSimpleField('title', t),
           })}
 
-          <div class="flex flex-col gap-1.5 mb-5">
-            <label class="text-[10px] font-bold tracking-widest uppercase text-gray-500">Calculator embed code</label>
-            <textarea
-              .value=${c?.reference_link ?? ''}
-              @blur=${(e: Event) => this._setSimpleField('reference_link', (e.target as HTMLTextAreaElement).value.trim())}
-              placeholder="<iframe src=… or embed snippet"
-              rows="4"
-              class="w-full rounded-lg border border-gray-200 bg-white px-3.5 py-2.5 text-[12px] font-mono outline-none focus:border-gray-400 resize-none"></textarea>
-            <p class="text-[11px] text-gray-400 leading-snug">Paste the embed snippet for the correct calculator. The front-end renders this in place.</p>
-          </div>
+          ${this._renderAssetTabs(mode)}
 
-          <div class="mb-5">
-            ${this._renderImageUploader({
-              label: 'Thumbnail',
-              value: c?.thumbnail_image ?? '',
-              onChange: (val) => this._setSimpleField('thumbnail_image', val),
-              onRemove: () => this._setSimpleField('thumbnail_image', ''),
-            })}
-          </div>
+          ${mode === 'upload' ? html`
+            <div class="flex flex-col gap-1.5 mb-5">
+              <label class="text-[10px] font-bold tracking-widest uppercase text-gray-500">Calculator embed code</label>
+              <textarea
+                .value=${c?.reference_link ?? ''}
+                @blur=${(e: Event) => this._setSimpleField('reference_link', (e.target as HTMLTextAreaElement).value.trim())}
+                placeholder="<iframe src=… or embed snippet"
+                rows="4"
+                class="w-full rounded-lg border border-gray-200 bg-white px-3.5 py-2.5 text-[12px] font-mono outline-none focus:border-gray-400 resize-none"></textarea>
+              <p class="text-[11px] text-gray-400 leading-snug">Paste the embed snippet for the correct calculator. The front-end renders this in place.</p>
+            </div>
 
-          <div class="flex flex-col gap-1.5">
-            <label class="text-[10px] font-bold tracking-widest uppercase text-gray-500">Description <span class="font-normal normal-case tracking-normal text-gray-400">(optional)</span></label>
-            <div
-              data-placeholder="What does this calculator do?"
-              class="ff-prose outline-none rounded-lg border border-gray-200 bg-white px-3.5 py-2.5 min-h-[120px] focus:border-gray-400"
-              contenteditable=${this.isGenerating ? 'false' : 'true'}
-              @blur=${(e: Event) => this._setSimpleField('copy', (e.target as HTMLElement).innerHTML)}
-            >${unsafeHTML(c?.copy ?? '')}</div>
-          </div>
+            <div class="mb-5">
+              ${this._renderImageUploader({
+                label: 'Thumbnail',
+                value: c?.thumbnail_image ?? '',
+                onChange: (val) => this._setSimpleField('thumbnail_image', val),
+                onRemove: () => this._setSimpleField('thumbnail_image', ''),
+              })}
+            </div>
+
+            <div class="flex flex-col gap-1.5">
+              <label class="text-[10px] font-bold tracking-widest uppercase text-gray-500">Description <span class="font-normal normal-case tracking-normal text-gray-400">(optional)</span></label>
+              <div
+                data-placeholder="What does this calculator do?"
+                class="ff-prose outline-none rounded-lg border border-gray-200 bg-white px-3.5 py-2.5 min-h-[120px] focus:border-gray-400"
+                contenteditable=${this.isGenerating ? 'false' : 'true'}
+                @blur=${(e: Event) => this._setSimpleField('copy', (e.target as HTMLElement).innerHTML)}
+              >${unsafeHTML(c?.copy ?? '')}</div>
+            </div>
+          ` : html`
+            <div class="flex flex-col gap-5">
+              ${this._renderBrainstormField({
+                label: 'What it calculates', field: 'concept', value: b.concept ?? '', multiline: true,
+                hint: 'The question this calculator answers for the user.',
+                placeholder: 'How long it will take to pay off a credit card balance at a given monthly payment.',
+              })}
+              ${this._renderBrainstormField({
+                label: 'Inputs from the user', field: 'inputs', value: b.inputs ?? '', multiline: true, rows: 4,
+                placeholder: '• Current balance\n• APR\n• Monthly payment\n• Optional: extra one-time payment',
+              })}
+              ${this._renderBrainstormField({
+                label: 'Outputs / what we show them', field: 'outputs', value: b.outputs ?? '', multiline: true, rows: 4,
+                placeholder: '• Months to payoff\n• Total interest paid\n• Side-by-side: minimum vs your payment',
+              })}
+              ${this._renderBrainstormField({
+                label: 'Methodology / formula notes', field: 'methodology', value: b.methodology ?? '', multiline: true, rows: 3,
+                placeholder: 'Standard amortization. Assumes no new charges. Round months up.',
+              })}
+              ${this._renderBrainstormField({
+                label: 'Educational copy that wraps the calc', field: 'wrap_copy', value: b.wrap_copy ?? '', multiline: true, rows: 3,
+                placeholder: 'Short intro: why this matters. Footer: what to do with the result.',
+              })}
+
+              ${this._renderVisualDirectionCard(html`
+                ${this._renderBrainstormField({
+                  label: 'Result visualization', field: 'visual_result', value: b.visual_result ?? '', multiline: true, rows: 2,
+                  placeholder: 'Big payoff date in hero. Two-line chart comparing minimum vs accelerated payment over time.',
+                })}
+                ${this._renderBrainstormField({
+                  label: 'Color & treatment', field: 'visual_color', value: b.visual_color ?? '',
+                  placeholder: 'FF teal primary, amber for "interest saved" accent.',
+                })}
+                ${this._renderBrainstormField({
+                  label: 'Thumbnail concept', field: 'visual_thumbnail', value: b.visual_thumbnail ?? '',
+                  placeholder: 'Calculator icon over a downward-curving debt line',
+                })}
+              `)}
+            </div>
+          `}
+
           ${this._renderRelatedResources(c?.related_resources ?? [])}
         </div>
       </div>
@@ -3523,6 +3731,8 @@ class FFApp extends LitElement {
     // Title isn't part of the strict schema — store it under _extras.title only
     // (the schema's _extras passthrough is designed for exactly this).
     const title = (g?._extras?.title as string | undefined) ?? ''
+    const mode = this._getAssetMode(g)
+    const b = this._getBrainstorm(g)
     return html`
       <div class="flex-1 overflow-y-auto scrollbar-thin">
         <div class="mx-auto max-w-[720px] px-4 sm:px-8 lg:px-12 py-6 lg:py-10 ${this.isGenerating ? 'ff-stream-cursor' : ''}" data-rewrite="true">
@@ -3533,6 +3743,9 @@ class FFApp extends LitElement {
             onCommit: (t) => { this._updateJson<any>(c => ({ ...c, _extras: { ...(c._extras ?? {}), title: t } })); this._maybeAutoSlug(t) },
           })}
 
+          ${this._renderAssetTabs(mode)}
+
+          ${mode === 'upload' ? html`
           <div class="mb-5">
             ${this._renderImageUploader({
               label: 'Thumbnail (optional, for library cards)',
@@ -3583,6 +3796,56 @@ class FFApp extends LitElement {
               `
             })()}
           </div>
+          ` : html`
+            <div class="flex flex-col gap-5">
+              ${this._renderBrainstormField({
+                label: 'Headline / topic', field: 'concept', value: b.concept ?? '',
+                placeholder: '5 numbers that explain your retirement readiness',
+              })}
+              ${this._renderBrainstormField({
+                label: 'Key data points & stats', field: 'data_points', value: b.data_points ?? '', multiline: true, rows: 5,
+                hint: 'List the numbers, percentages, or facts that anchor the visual.',
+                placeholder: '• Only 36% of Americans have a written retirement plan\n• Saving 15% of income from age 25 → on track\n• Catch-up contribution: $7,500/year over 50',
+              })}
+              <div class="grid grid-cols-2 gap-4">
+                ${this._renderBrainstormField({
+                  label: 'Structure', field: 'structure', value: b.structure ?? '',
+                  placeholder: 'Step-by-step / comparison / timeline',
+                })}
+                ${this._renderBrainstormField({
+                  label: 'Orientation', field: 'orientation', value: b.orientation ?? '',
+                  placeholder: 'Vertical scroll, social square…',
+                })}
+              </div>
+              ${this._renderBrainstormField({
+                label: 'Story arc / flow', field: 'flow', value: b.flow ?? '', multiline: true, rows: 3,
+                placeholder: 'Open with the problem, drop the surprising stat, walk through 3 actions, close with the payoff.',
+              })}
+              ${this._renderBrainstormField({
+                label: 'Sources & citations', field: 'sources', value: b.sources ?? '', multiline: true, rows: 2,
+                placeholder: 'Fed Reserve 2025 SCF, EBRI Retirement Confidence Survey…',
+              })}
+
+              ${this._renderVisualDirectionCard(html`
+                ${this._renderBrainstormField({
+                  label: 'Style & illustration tone', field: 'visual_style', value: b.visual_style ?? '', multiline: true, rows: 2,
+                  placeholder: 'Friendly editorial. Hand-drawn icon set. Generous whitespace. No stock photos.',
+                })}
+                ${this._renderBrainstormField({
+                  label: 'Color palette', field: 'visual_palette', value: b.visual_palette ?? '',
+                  placeholder: 'FF teal #063853, cream #FAF6EE, amber accent',
+                })}
+                ${this._renderBrainstormField({
+                  label: 'Icons & visual elements', field: 'visual_elements', value: b.visual_elements ?? '', multiline: true, rows: 2,
+                  placeholder: 'Piggy bank, calendar grid, ascending bar chart, single-line portrait illustrations.',
+                })}
+                ${this._renderBrainstormField({
+                  label: 'Thumbnail concept', field: 'visual_thumbnail', value: b.visual_thumbnail ?? '',
+                  placeholder: 'Big "5" numeral with five floating coins',
+                })}
+              `)}
+            </div>
+          `}
           ${this._renderRelatedResources(g?.related_resources ?? [])}
         </div>
       </div>
