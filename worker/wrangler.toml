@@ -1,0 +1,12 @@
+name = "ff-claude-proxy"
+main = "index.ts"
+compatibility_date = "2024-09-23"
+
+# Origins allowed to call this worker. The deployed GitHub Pages site is the
+# only one needed in production; localhost entries cover local dev. Add more
+# (comma-separated) if you ever host the site somewhere else.
+[vars]
+ALLOWED_ORIGINS = "https://thebrimay-wq.github.io,http://localhost:3003,http://127.0.0.1:3003"
+
+# Note: ANTHROPIC_API_KEY is stored as a Worker Secret, NOT in this file.
+# Set it once with:  npx wrangler secret put ANTHROPIC_API_KEY

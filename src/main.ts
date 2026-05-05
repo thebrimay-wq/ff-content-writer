@@ -16,6 +16,7 @@ import {
   buildSourcesMessage,
   buildSeoArticleMessage,
   streamMessage,
+  isProxyConfigured,
   AUDIENCE_LABELS,
   type GenerateRequest,
   type ExpertSource,
@@ -206,6 +207,10 @@ class FFApp extends LitElement {
   @state() private apiKey = localStorage.getItem('ff_api_key') ?? ''
   @state() private showKeyPrompt = false
   @state() private keyDraft = ''
+
+  /** True when we can call Claude — either the user pasted their own key OR
+   *  the shared Cloudflare Worker proxy is configured at build time. */
+  private _hasApiAccess(): boolean { return !!this.apiKey || isProxyConfigured() }
 
   // Switch-to-AI confirmation modal: shown when flipping manual → ai with
   // non-empty manual content. Three options: use as context / start fresh /
@@ -606,7 +611,7 @@ class FFApp extends LitElement {
 
   private async _generate() {
     if (!this.topic.trim()) return
-    if (!this.apiKey) { this.showKeyPrompt = true; this.keyDraft = ''; return }
+    if (!this._hasApiAccess()) { this.showKeyPrompt = true; this.keyDraft = ''; return }
 
     const req: GenerateRequest = {
       contentType: this.contentType,
@@ -658,7 +663,7 @@ class FFApp extends LitElement {
   // Sources / long-form are skipped when the writer has already curated them,
   // unless `force` is true (user-clicked refresh).
   private async _autoExtractSources(ctx: GenerateRequest, force = false) {
-    if (!this.apiKey || !this.output.trim()) return
+    if (!this._hasApiAccess() || !this.output.trim()) return
     const hasUserSources = this._sources.some(s => s.title.trim() || s.url.trim() || s.note.trim())
     if (hasUserSources && !force) return
     this._sourcesLoading = true
@@ -693,7 +698,7 @@ class FFApp extends LitElement {
   }
 
   private async _autoExpandSeoArticle(ctx: GenerateRequest, force = false) {
-    if (!this.apiKey || !this.output.trim()) return
+    if (!this._hasApiAccess() || !this.output.trim()) return
     if (this._seoArticle.trim() && !force) return
     this._seoLoading = true
     try {
@@ -721,7 +726,7 @@ class FFApp extends LitElement {
   }
 
   private async _autoExtractExcerpt(ctx: GenerateRequest) {
-    if (!this.apiKey || !this.output.trim()) return
+    if (!this._hasApiAccess() || !this.output.trim()) return
     this._excerptLoading = true
     try {
       const draft = this.contentType === 'article' ? stripPublishingSections(this.output) : this.output
@@ -763,7 +768,7 @@ class FFApp extends LitElement {
   }
 
   private async _autoExtractMetaDescription(ctx: GenerateRequest) {
-    if (!this.apiKey || !this.output.trim()) return
+    if (!this._hasApiAccess() || !this.output.trim()) return
     this._metaDescriptionLoading = true
     try {
       const draft = this.contentType === 'article' ? stripPublishingSections(this.output) : this.output
@@ -827,27 +832,27 @@ class FFApp extends LitElement {
    *  field, so it's safe to overwrite even when the field is non-empty. */
   private _refreshExcerptFromDraft() {
     if (!this.output.trim()) return
-    if (!this.apiKey) { this.showKeyPrompt = true; this.keyDraft = ''; return }
+    if (!this._hasApiAccess()) { this.showKeyPrompt = true; this.keyDraft = ''; return }
     void this._autoExtractExcerpt(this._currentRequest())
   }
   private _refreshMetaDescriptionFromDraft() {
     if (!this.output.trim()) return
-    if (!this.apiKey) { this.showKeyPrompt = true; this.keyDraft = ''; return }
+    if (!this._hasApiAccess()) { this.showKeyPrompt = true; this.keyDraft = ''; return }
     void this._autoExtractMetaDescription(this._currentRequest())
   }
   private _refreshSeoArticleFromDraft() {
     if (!this.output.trim()) return
-    if (!this.apiKey) { this.showKeyPrompt = true; this.keyDraft = ''; return }
+    if (!this._hasApiAccess()) { this.showKeyPrompt = true; this.keyDraft = ''; return }
     void this._autoExpandSeoArticle(this._currentRequest(), true)
   }
   private _refreshSourcesFromDraft() {
     if (!this.output.trim()) return
-    if (!this.apiKey) { this.showKeyPrompt = true; this.keyDraft = ''; return }
+    if (!this._hasApiAccess()) { this.showKeyPrompt = true; this.keyDraft = ''; return }
     void this._autoExtractSources(this._currentRequest(), true)
   }
 
   private async _refine(instruction: string) {
-    if (!this.output.trim() || !this.apiKey) return
+    if (!this.output.trim() || !this._hasApiAccess()) return
     const ctx: GenerateRequest = this.lastRequest
       ? { ...this.lastRequest, seoArticle: this._seoArticle }
       : {
@@ -2291,9 +2296,9 @@ class FFApp extends LitElement {
             </button>
             <button
               @click=${() => { this.keyDraft = this.apiKey; this.showKeyPrompt = true }}
-              class="text-[11px] font-semibold px-2.5 py-1 rounded-md transition-colors whitespace-nowrap ${this.apiKey ? 'text-emerald-600 bg-emerald-50 hover:bg-emerald-100' : 'text-gray-400 bg-gray-100 hover:bg-gray-200'}"
-              title="Update Anthropic API key"
-            >${this.apiKey ? 'Key set' : 'API key'}</button>
+              class="text-[11px] font-semibold px-2.5 py-1 rounded-md transition-colors whitespace-nowrap ${this._hasApiAccess() ? 'text-emerald-600 bg-emerald-50 hover:bg-emerald-100' : 'text-gray-400 bg-gray-100 hover:bg-gray-200'}"
+              title=${this.apiKey ? 'Update Anthropic API key' : (isProxyConfigured() ? 'Connected via shared proxy — click to use your own key' : 'Add an Anthropic API key')}
+            >${this.apiKey ? 'Key set' : (isProxyConfigured() ? 'Connected' : 'API key')}</button>
             ${this.tab === 'new' && this.mode === 'editor' ? html`
               <!-- Right-rail drawer toggle (visible only below lg) -->
               <button
@@ -5128,7 +5133,7 @@ class FFApp extends LitElement {
   }
 
   private async _runRewrite(action: string, instruction: string) {
-    if (!this.apiKey) { this.showKeyPrompt = true; return }
+    if (!this._hasApiAccess()) { this.showKeyPrompt = true; return }
     if (!this._selText) return
 
     // Snapshot the selection range and the editable element BEFORE the

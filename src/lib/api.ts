@@ -342,6 +342,19 @@ export function buildJsonRefinementMessage(
   return lines.join('\n')
 }
 
+// ── Proxy configuration ───────────────────────────────────────────────────────
+// After deploying the Cloudflare Worker in /worker, paste its URL here (no
+// trailing slash). Leave empty to fall back to BYO-key mode where each user
+// supplies their own Anthropic key in the browser.
+//
+//   e.g. const PROXY_URL = 'https://ff-claude-proxy.your-handle.workers.dev'
+const PROXY_URL = ''
+
+/** True when a shared proxy is configured — the team key lives server-side. */
+export function isProxyConfigured(): boolean {
+  return PROXY_URL.length > 0
+}
+
 export async function streamMessage(
   apiKey: string,
   messages: Message[],
@@ -350,14 +363,20 @@ export async function streamMessage(
   signal?: AbortSignal,
   maxTokens = 2048,
 ): Promise<void> {
-  const response = await fetch('https://api.anthropic.com/v1/messages', {
+  // Use the proxy when no per-user key is set. A power user with their own key
+  // still calls Anthropic directly so they bypass the shared quota.
+  const useProxy = !apiKey && isProxyConfigured()
+  const url = useProxy ? `${PROXY_URL}/v1/messages` : 'https://api.anthropic.com/v1/messages'
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  if (!useProxy) {
+    headers['x-api-key'] = apiKey
+    headers['anthropic-version'] = '2023-06-01'
+    headers['anthropic-dangerous-direct-browser-access'] = 'true'
+  }
+
+  const response = await fetch(url, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': apiKey,
-      'anthropic-version': '2023-06-01',
-      'anthropic-dangerous-direct-browser-access': 'true',
-    },
+    headers,
     body: JSON.stringify({
       model: 'claude-sonnet-4-6',
       max_tokens: maxTokens,
