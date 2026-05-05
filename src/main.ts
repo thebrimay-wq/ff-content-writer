@@ -1966,11 +1966,11 @@ class FFApp extends LitElement {
         <div class="flex flex-col gap-1" data-field="slug">
           <div class="flex items-center justify-between gap-2">
             <label class="text-[11px] font-semibold text-gray-700">URL slug <span class="text-red-500">*</span></label>
-            ${!this._slugAutoFromTitle ? html`
-              <button type="button"
-                @click=${() => { this._slugAutoFromTitle = true; this._slug = deriveSlug(this._getTitle()); this.isDirty = true }}
-                class="text-[10.5px] text-[#063853] font-semibold hover:underline">Sync to title</button>
-            ` : ''}
+            ${this._renderRefreshFromDraft({
+              loading: false,
+              title: 'Re-derive the slug from the current title',
+              onClick: () => { this._slugAutoFromTitle = true; this._slug = deriveSlug(this._getTitle()); this.isDirty = true },
+            })}
           </div>
           <input type="text" .value=${this._slug}
             @input=${(e: Event) => { this._slug = (e.target as HTMLInputElement).value; this._slugAutoFromTitle = false; this.isDirty = true }}
@@ -2280,7 +2280,7 @@ class FFApp extends LitElement {
           </div>
           <div class="flex items-center gap-2 sm:gap-3">
             <button
-              @click=${() => { this._helpOpen = true }}
+              @click=${() => { this._helpView = 'detailed'; this._helpOpen = true }}
               title="How to use this"
               class="w-8 h-8 flex items-center justify-center rounded-full text-gray-400 hover:text-[#063853] hover:bg-gray-100 transition-colors">
               <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
@@ -2329,40 +2329,121 @@ class FFApp extends LitElement {
   }
 
   // ── Help / how-to modal ──────────────────────────────────────────────────
+  // Two views inside the same modal shell:
+  //  • onboarding — auto-opens on first visit. Four screenshot-led steps.
+  //  • detailed   — opens from the header ? icon. Full how-to with kbd refs.
   private _renderHelp() {
     if (!this._helpOpen) return ''
     return html`
       <div class="fixed inset-0 z-[60] bg-black/40 flex items-center justify-center px-4 py-6"
         @click=${(e: Event) => { if (e.target === e.currentTarget) this._helpOpen = false }}>
         <div class="bg-white rounded-2xl shadow-2xl max-w-[760px] w-full max-h-[88vh] flex flex-col ff-fade-in">
+          ${this._helpView === 'onboarding' ? this._renderHelpOnboarding() : this._renderHelpDetailed()}
+        </div>
+      </div>
+    `
+  }
 
-          <div class="flex items-center justify-between px-6 py-4 border-b border-gray-100 shrink-0">
-            <div class="flex items-center gap-3">
-              <span class="w-8 h-8 rounded-full flex items-center justify-center bg-violet-50 text-violet-600">
-                <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><circle cx="7" cy="7" r="6" stroke="currentColor" stroke-width="1.4"/><path d="M5 5.2a2 2 0 014 0c0 .8-.5 1.2-1.2 1.5-.6.3-.8.6-.8 1" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><circle cx="7" cy="10.2" r="0.7" fill="currentColor"/></svg>
-              </span>
-              <div>
-                <h2 class="text-[16px] font-semibold text-[#1a1a1a] leading-tight">How to use the AI Content Writer</h2>
-                <p class="text-[11px] text-gray-400">Five-minute read · ⌘+? to reopen anytime</p>
-              </div>
-            </div>
-            <button @click=${() => { this._helpOpen = false }}
-              title="Close (Esc)"
-              class="text-gray-400 hover:text-gray-700 text-[22px] leading-none w-8 h-8 flex items-center justify-center rounded-full hover:bg-gray-100">×</button>
-          </div>
+  private _onboardingSteps = [
+    {
+      img: 'onboarding/01-gate.jpg',
+      title: 'Choose how to start',
+      body: 'Two paths: write it yourself, or let AI draft a first version. Pick one — you can switch anytime from the sidebar.',
+    },
+    {
+      img: 'onboarding/02-sidebar.jpg',
+      title: 'Tell us what you\'re making',
+      body: 'Pick a content type and audience, drop in a topic, and hit Generate. Or flip to Blank and just start writing.',
+    },
+    {
+      img: 'onboarding/03-editor.jpg',
+      title: 'Click anywhere to edit',
+      body: 'Title, headings, body — it\'s all live. Type / for blocks (heading, list, quote, table). Highlight text for AI rewrites.',
+    },
+    {
+      img: 'onboarding/04-rail.jpg',
+      title: 'Save and publish on the right',
+      body: 'Save as draft anytime. The amber checklist tells you what\'s missing before you can submit for review.',
+    },
+  ]
 
-          <div class="flex-1 overflow-y-auto scrollbar-thin px-7 py-6 ff-prose">
-            ${this._renderHelpBody()}
-          </div>
+  private _renderHelpOnboarding() {
+    const steps = this._onboardingSteps
+    const i = Math.max(0, Math.min(this._helpStep, steps.length - 1))
+    const step = steps[i]
+    const isLast = i === steps.length - 1
+    return html`
+      <div class="flex items-center justify-between px-6 py-3.5 border-b border-gray-100 shrink-0">
+        <div class="text-[11px] uppercase tracking-wider text-gray-400 font-semibold">Welcome — quick tour ${i + 1} of ${steps.length}</div>
+        <button @click=${() => { this._helpOpen = false }}
+          title="Close (Esc)"
+          class="text-gray-400 hover:text-gray-700 text-[22px] leading-none w-8 h-8 flex items-center justify-center rounded-full hover:bg-gray-100">×</button>
+      </div>
 
-          <div class="flex items-center justify-between px-6 py-3 border-t border-gray-100 shrink-0 gap-3">
-            <p class="text-[11px] text-gray-400">Open this anytime from the <span class="inline-flex items-center justify-center w-4 h-4 rounded-full border border-gray-300 text-[10px] mx-0.5">?</span> in the top bar.</p>
-            <button @click=${() => { this._helpOpen = false }}
-              class="text-[12px] font-semibold px-4 py-2 rounded-lg bg-[#063853] hover:bg-[#04293D] text-white">
-              Got it
-            </button>
+      <div class="flex-1 overflow-y-auto px-7 py-6 flex flex-col items-center gap-5">
+        <div class="w-full h-[340px] rounded-xl border border-gray-200 bg-gray-50 overflow-hidden shadow-sm">
+          <img src="${import.meta.env.BASE_URL}${step.img}" alt="${step.title}" class="w-full h-full object-contain block" />
+        </div>
+        <div class="text-center max-w-[520px]">
+          <h2 class="text-[20px] font-semibold text-[#1a1a1a] mb-2 leading-tight">${step.title}</h2>
+          <p class="text-[14px] text-gray-600 leading-relaxed">${step.body}</p>
+        </div>
+      </div>
+
+      <div class="flex items-center justify-between px-6 py-3 border-t border-gray-100 shrink-0 gap-3">
+        <div class="flex items-center gap-1.5">
+          ${steps.map((_, idx) => html`
+            <button type="button"
+              @click=${() => { this._helpStep = idx }}
+              aria-label="Go to step ${idx + 1}"
+              class="w-1.5 h-1.5 rounded-full transition-colors ${idx === i ? 'bg-[#063853]' : 'bg-gray-200 hover:bg-gray-300'}"></button>
+          `)}
+        </div>
+        <div class="flex items-center gap-1">
+          <button class="text-[12px] text-gray-500 hover:text-[#063853] hover:underline px-2 py-1.5"
+            @click=${() => { this._helpView = 'detailed' }}>See full how-to</button>
+          ${i > 0 ? html`
+            <button class="text-[12px] font-semibold px-3 py-2 rounded-lg text-gray-700 hover:bg-gray-100"
+              @click=${() => { this._helpStep = i - 1 }}>Back</button>
+          ` : ''}
+          <button class="text-[12px] font-semibold px-4 py-2 rounded-lg bg-[#063853] hover:bg-[#04293D] text-white"
+            @click=${() => {
+              if (isLast) { this._helpOpen = false }
+              else { this._helpStep = i + 1 }
+            }}>${isLast ? 'Get started' : 'Next'}</button>
+        </div>
+      </div>
+    `
+  }
+
+  private _renderHelpDetailed() {
+    return html`
+      <div class="flex items-center justify-between px-6 py-4 border-b border-gray-100 shrink-0">
+        <div class="flex items-center gap-3">
+          <span class="w-8 h-8 rounded-full flex items-center justify-center bg-violet-50 text-violet-600">
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><circle cx="7" cy="7" r="6" stroke="currentColor" stroke-width="1.4"/><path d="M5 5.2a2 2 0 014 0c0 .8-.5 1.2-1.2 1.5-.6.3-.8.6-.8 1" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><circle cx="7" cy="10.2" r="0.7" fill="currentColor"/></svg>
+          </span>
+          <div>
+            <h2 class="text-[16px] font-semibold text-[#1a1a1a] leading-tight">How to use the AI Content Writer</h2>
+            <p class="text-[11px] text-gray-400">Full how-to · Esc to close</p>
           </div>
         </div>
+        <button @click=${() => { this._helpOpen = false }}
+          title="Close (Esc)"
+          class="text-gray-400 hover:text-gray-700 text-[22px] leading-none w-8 h-8 flex items-center justify-center rounded-full hover:bg-gray-100">×</button>
+      </div>
+
+      <div class="flex-1 overflow-y-auto scrollbar-thin px-7 py-6 ff-prose">
+        ${this._renderHelpBody()}
+      </div>
+
+      <div class="flex items-center justify-between px-6 py-3 border-t border-gray-100 shrink-0 gap-3">
+        <button class="text-[12px] text-gray-500 hover:text-[#063853] hover:underline px-2 py-1.5"
+          @click=${() => { this._helpView = 'onboarding'; this._helpStep = 0 }}>← Quick walkthrough</button>
+        <button @click=${() => { this._helpOpen = false }}
+          class="text-[12px] font-semibold px-4 py-2 rounded-lg bg-[#063853] hover:bg-[#04293D] text-white">
+          Got it
+        </button>
       </div>
     `
   }
@@ -4653,6 +4734,8 @@ class FFApp extends LitElement {
 
   // ── Help / how-to modal ─────────────────────────────────────────────────
   @state() private _helpOpen = false
+  @state() private _helpView: 'onboarding' | 'detailed' = 'onboarding'
+  @state() private _helpStep = 0
 
   // ── Easter eggs ──────────────────────────────────────────────────────────
   @state() private _confettiPieces: Array<{ id: number; left: number; delay: number; bg: string; dur: number }> = []
