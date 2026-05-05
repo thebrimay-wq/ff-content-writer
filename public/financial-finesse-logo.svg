@@ -1,0 +1,13 @@
+<svg viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Financial Finesse">
+  <defs>
+    <radialGradient id="ffG" cx="38%" cy="32%" r="78%">
+      <stop offset="0%" stop-color="#5BB0DD"/>
+      <stop offset="55%" stop-color="#2278B5"/>
+      <stop offset="100%" stop-color="#0A3F70"/>
+    </radialGradient>
+  </defs>
+  <circle cx="100" cy="100" r="96" fill="url(#ffG)"/>
+  <text x="92" y="158" text-anchor="middle" font-family="Georgia, 'Times New Roman', serif" font-style="italic" font-weight="700" font-size="148" fill="#000">f</text>
+  <path d="M108 38 C 130 32 158 38 178 56" stroke="#000" stroke-width="6" fill="none" stroke-linecap="round"/>
+  <path d="M122 58 C 144 54 162 62 178 76" stroke="#000" stroke-width="6" fill="none" stroke-linecap="round"/>
+</svg>

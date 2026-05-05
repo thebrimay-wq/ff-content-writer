@@ -2256,6 +2256,17 @@ class FFApp extends LitElement {
         <!-- Top bar -->
         <header class="flex items-center justify-between px-2 sm:px-4 h-12 shrink-0 bg-white border-b border-gray-100">
           <div class="flex items-center min-w-0">
+            <a
+              href="${import.meta.env.BASE_URL}"
+              class="flex items-center pl-1 pr-2 sm:pr-3 h-12 shrink-0"
+              aria-label="Financial Finesse — Content Studio"
+              title="Financial Finesse">
+              <img
+                src="${import.meta.env.BASE_URL}financial-finesse-logo.svg"
+                alt="Financial Finesse"
+                class="w-8 h-8 select-none"
+                draggable="false" />
+            </a>
             ${this.tab === 'new' && this.mode === 'editor' ? html`
               <!-- Sidebar drawer toggle (visible only below lg) -->
               <button
@@ -2429,7 +2440,7 @@ class FFApp extends LitElement {
             <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><circle cx="7" cy="7" r="6" stroke="currentColor" stroke-width="1.4"/><path d="M5 5.2a2 2 0 014 0c0 .8-.5 1.2-1.2 1.5-.6.3-.8.6-.8 1" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><circle cx="7" cy="10.2" r="0.7" fill="currentColor"/></svg>
           </span>
           <div>
-            <h2 class="text-[16px] font-semibold text-[#1a1a1a] leading-tight">How to use the AI Content Writer</h2>
+            <h2 class="text-[16px] font-semibold text-[#1a1a1a] leading-tight">How to use Content Studio</h2>
             <p class="text-[11px] text-gray-400">Full how-to · Esc to close</p>
           </div>
         </div>
@@ -2457,7 +2468,7 @@ class FFApp extends LitElement {
     const kbd = (t: string) => html`<span class="font-mono text-[12px] px-1.5 py-0.5 rounded bg-gray-100 text-gray-700">${t}</span>`
     return html`
       <p style="font-size:15px;color:#383838;line-height:1.65;margin-top:0;">
-        The AI Content Writer is the writing space for Financial Finesse content. You type a topic and a first draft appears in our voice. You edit it like a Notion page. You ship it to the hub. The whole loop, in one tab.
+        Content Studio is the writing space for Financial Finesse content. You type a topic and a first draft appears in our voice. You edit it like a Notion page. You ship it to the hub. The whole loop, in one tab.
       </p>
 
       <h2>The first time you open it</h2>
