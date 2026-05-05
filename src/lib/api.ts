@@ -348,7 +348,7 @@ export function buildJsonRefinementMessage(
 // supplies their own Anthropic key in the browser.
 //
 //   e.g. const PROXY_URL = 'https://ff-claude-proxy.your-handle.workers.dev'
-const PROXY_URL = ''
+const PROXY_URL = 'https://ff-claude-proxy.bri-may.workers.dev'
 
 /** True when a shared proxy is configured — the team key lives server-side. */
 export function isProxyConfigured(): boolean {
