@@ -2262,7 +2262,7 @@ class FFApp extends LitElement {
               aria-label="Financial Finesse — Content Studio"
               title="Financial Finesse">
               <img
-                src="${import.meta.env.BASE_URL}financial-finesse-logo.svg"
+                src="${import.meta.env.BASE_URL}FF%20icon.svg"
                 alt="Financial Finesse"
                 class="w-8 h-8 select-none"
                 draggable="false" />
