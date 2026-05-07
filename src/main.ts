@@ -492,6 +492,62 @@ class FFApp extends LitElement {
   // Capped so memory doesn't grow unbounded over a long session.
   @state() private _undoStack: string[] = []
   @state() private _redoStack: string[] = []
+
+  // Copy-to-clipboard transient state. `_copied` flips true for ~1.5s after a
+  // successful copy so the toolbar button can show "Copied!" feedback.
+  @state() private _copied = false
+  private _copiedTimer: number | null = null
+  // Only the long-form / structured types where a "copy paste elsewhere"
+  // workflow makes sense. Excludes admin / source-only types.
+  private static readonly _COPYABLE_TYPES = new Set([
+    'article', 'money_tip', 'quiz', 'checklist', 'expert_insight', 'user_story',
+  ])
+
+  private async _copyOutput() {
+    const root = this.querySelector('main[data-copy-root]') as HTMLElement | null
+    if (!root) return
+    // Pick the scroll container produced by `_renderCenter()` — it wraps the
+    // full draft (title + body, or the structured renderer for non-article
+    // types), so its innerText/innerHTML is what the user sees. Clone it so
+    // we can strip in-app affordances (buttons, the read-time chip, the
+    // /-block hint) before turning it into clipboard content.
+    const scroller = root.querySelector<HTMLElement>(':scope > .overflow-y-auto')
+    if (!scroller) return
+    const clone = scroller.cloneNode(true) as HTMLElement
+    clone.querySelectorAll('button, [data-copy-skip]').forEach(el => el.remove())
+    // The read-time meta line is the only `<p>` containing "READ TIME:" —
+    // safe to drop because users care about the prose, not the chip.
+    clone.querySelectorAll('p').forEach(p => {
+      if (/^read time/i.test((p.textContent || '').trim())) p.remove()
+    })
+    // innerText needs layout, so attach off-screen, read, then detach.
+    clone.style.position = 'fixed'
+    clone.style.left = '-99999px'
+    clone.style.top = '0'
+    document.body.appendChild(clone)
+    const text = (clone.innerText || '').replace(/\n{3,}/g, '\n\n').trim()
+    const html = clone.innerHTML
+    clone.remove()
+    if (!text) return
+    try {
+      const Item = (window as unknown as { ClipboardItem?: typeof ClipboardItem }).ClipboardItem
+      if (navigator.clipboard && Item && typeof navigator.clipboard.write === 'function') {
+        await navigator.clipboard.write([
+          new Item({
+            'text/plain': new Blob([text], { type: 'text/plain' }),
+            'text/html':  new Blob([html], { type: 'text/html' }),
+          }),
+        ])
+      } else {
+        await navigator.clipboard.writeText(text)
+      }
+      this._copied = true
+      if (this._copiedTimer) window.clearTimeout(this._copiedTimer)
+      this._copiedTimer = window.setTimeout(() => { this._copied = false; this._copiedTimer = null }, 1500)
+    } catch {
+      try { await navigator.clipboard.writeText(text) } catch { /* swallow */ }
+    }
+  }
   private _pushUndo() {
     this._undoStack = [...this._undoStack, this.output].slice(-50)
     this._redoStack = []
@@ -3347,7 +3403,7 @@ class FFApp extends LitElement {
         </aside>
 
         <!-- CENTER: output -->
-        <main class="flex-1 flex flex-col overflow-hidden min-w-0 bg-white relative">
+        <main data-copy-root class="flex-1 flex flex-col overflow-hidden min-w-0 bg-white relative">
           ${!this.isGenerating ? this._renderCenterToolbar() : ''}
           ${this._renderVariantTabs()}
           ${this.error ? html`
@@ -3408,6 +3464,7 @@ class FFApp extends LitElement {
     const canUndo = this._undoStack.length > 0
     const canRedo = this._redoStack.length > 0
     const hasDraft = !!this.output
+    const canCopy = hasDraft && FFApp._COPYABLE_TYPES.has(this.contentType)
     return html`
       <div class="shrink-0 flex items-center justify-between px-6 h-10 border-b border-gray-100 bg-white">
         <div class="flex items-center gap-1">
@@ -3497,6 +3554,26 @@ class FFApp extends LitElement {
               </div>
             ` : ''}
           </div>
+          ` : ''}
+
+          ${canCopy ? html`
+            <button
+              @click=${() => this._copyOutput()}
+              title="Copy the draft to your clipboard"
+              class="inline-flex items-center gap-1 px-2 py-1 rounded-md transition-colors ${this._copied ? 'bg-emerald-50 text-emerald-700' : 'text-gray-500 hover:bg-gray-100'}">
+              ${this._copied ? html`
+                <svg width="12" height="12" viewBox="0 0 14 14" fill="none">
+                  <path d="M3 7.5L6 10l5-6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+                <span class="text-[11px] font-semibold">Copied</span>
+              ` : html`
+                <svg width="12" height="12" viewBox="0 0 14 14" fill="none">
+                  <rect x="4.5" y="4.5" width="7.5" height="8" rx="1.2" stroke="currentColor" stroke-width="1.3"/>
+                  <path d="M9.5 4.5V3.2A1.2 1.2 0 008.3 2H3.2A1.2 1.2 0 002 3.2v6.1A1.2 1.2 0 003.2 10.5h1.3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
+                </svg>
+                <span class="text-[11px] font-semibold">Copy</span>
+              `}
+            </button>
           ` : ''}
 
           ${hasDraft ? html`
