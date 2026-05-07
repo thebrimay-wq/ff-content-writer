@@ -1,7 +1,7 @@
 import { defineConfig } from 'vite'
 
 export default defineConfig({
-  base: '/ff-content-writer/',
+  base: '/',
   build: {
     rollupOptions: {
       output: {
