@@ -1,5 +1,6 @@
 import { LitElement, html } from 'lit'
 import { customElement, property, state } from 'lit/decorators.js'
+import './ff-brand-button'
 import { AUDIENCE_LABELS, TYPE_LABELS } from '../lib/api'
 import type { ContentEntry, ContentStatus } from '../lib/store'
 
@@ -238,10 +239,10 @@ export class FFLibrary extends LitElement {
                 </span>
               </div>
               <div class="flex items-center justify-end">
-                <button
+                <ff-brand-button
+                  size="sm"
                   @click=${() => this._emit('open-entry', e)}
-                  class="text-[12px] font-semibold text-white bg-[#063853] hover:bg-[#04293D] px-3 py-1.5 rounded-md transition-colors"
-                >Review</button>
+                >Review</ff-brand-button>
               </div>
             </li>
           `)}
@@ -375,10 +376,10 @@ export class FFLibrary extends LitElement {
                   title="Permanently delete everything in Trash"
                 >Empty Trash</button>
               ` : ''}
-              <button
+              <ff-brand-button
+                size="sm"
                 @click=${() => this._emit('new-content', null)}
-                class="text-[12px] font-semibold text-white bg-[#063853] hover:bg-[#04293D] px-3 py-1.5 rounded-md transition-colors"
-              >+ New content</button>
+              >+ New content</ff-brand-button>
             </div>
           </div>
 
@@ -663,10 +664,9 @@ export class FFLibrary extends LitElement {
           Generate a draft on the New tab and save it here.
         </p>
         <div class="flex items-center gap-3 mt-6">
-          <button
+          <ff-brand-button
             @click=${() => this._emit('new-content', null)}
-            class="text-[13px] font-semibold text-white bg-[#063853] hover:bg-[#04293D] px-4 py-2 rounded-md transition-colors"
-          >+ New content</button>
+          >+ New content</ff-brand-button>
         </div>
       </div>
     `

@@ -52,7 +52,317 @@ import {
 import type { ContentSource, RelatedResourceRef } from './lib/store'
 import { loadArticles, getCategoryGroups } from './lib/articles'
 import { CURATED_CATEGORIES } from './lib/taxonomy'
+import { LOCALES, DEMO_COUNTRIES, findLocaleByCountry, type LocaleEntry } from './lib/locales'
+
+// ── Localization data model ────────────────────────────────────────────────
+// One Localization per country tab (other than the source). Holds the
+// localized content plus a flat array of annotations the AI produced.
+// In-memory only for now — not persisted to ContentEntry yet.
+
+export interface AdaptAnnotation {
+  type: 'adaptation'
+  /** Exact substring as it appears in the variant content. */
+  phrase: string
+  /** What it was in the source ("$1,000"). */
+  from: string
+  category: 'currency' | 'regulator' | 'idiom' | 'product' | 'example' | 'other'
+  /** One-line plain-English rationale ("Converted USD to MXN at 1:18.5"). */
+  rationale: string
+}
+
+export interface QuestionAnnotation {
+  type: 'question'
+  /** 0-based index into the variant's paragraphs (where the card renders). */
+  after_paragraph_index: number
+  category: string
+  question_text: string
+  /** Fallback the writer can accept without typing. */
+  default_resolution: string
+  status: 'open' | 'resolved'
+  /** Writer's reply, if answered. */
+  resolution_text?: string
+}
+
+export type Annotation = AdaptAnnotation | QuestionAnnotation
+
+export interface Localization {
+  /** Stable id (locale code, e.g. "es-MX"). Also serves as the tab key. */
+  id: string
+  country: string
+  flag: string
+  locale: string
+  languageLabel: string
+  currency: string
+  regulator: string
+  /** Active serialization — markdown for articles, JSON string otherwise. */
+  content_markdown: string
+  annotations: Annotation[]
+  status: 'drafting' | 'ready'
+  createdAt: number
+  updatedAt: number
+}
 import './components/ff-library'
+import './components/ff-brand-button'
+
+// ── Localization streaming/parse helpers ──────────────────────────────────
+// The localization prompt asks for { content_markdown, annotations[] } as
+// strict JSON. While streaming we want to show the writer the markdown
+// before the full JSON closes; after streaming we parse strictly.
+
+/** Strip a leading ```json … ``` fence (or plain ```…```) if present. */
+function stripCodeFence(s: string): string {
+  const t = s.trim()
+  const fenceStart = /^```(?:json)?\s*\n?/i
+  const fenceEnd = /\n?```\s*$/
+  return t.replace(fenceStart, '').replace(fenceEnd, '')
+}
+
+/** Pull a best-effort `content_markdown` value out of a partially-streamed
+ *  JSON buffer. Returns null if the key isn't visible yet, in which case
+ *  callers can show the raw buffer instead. Unescapes the common escape
+ *  sequences so the in-flight markdown reads naturally. */
+function extractStreamingMarkdown(buffer: string): string | null {
+  const stripped = stripCodeFence(buffer)
+  // Find the start of the content_markdown string value.
+  const keyMatch = stripped.match(/"content_markdown"\s*:\s*"/)
+  if (!keyMatch) return null
+  const start = (keyMatch.index ?? 0) + keyMatch[0].length
+  // Walk forward, honoring escapes, until we hit an unescaped closing quote
+  // or run out of buffer (still streaming).
+  let i = start
+  let out = ''
+  while (i < stripped.length) {
+    const ch = stripped[i]
+    if (ch === '\\' && i + 1 < stripped.length) {
+      const next = stripped[i + 1]
+      if (next === 'n') out += '\n'
+      else if (next === 't') out += '\t'
+      else if (next === 'r') out += '\r'
+      else if (next === '"') out += '"'
+      else if (next === '\\') out += '\\'
+      else if (next === '/') out += '/'
+      else if (next === 'u' && i + 5 < stripped.length) {
+        const hex = stripped.slice(i + 2, i + 6)
+        if (/^[0-9a-fA-F]{4}$/.test(hex)) {
+          out += String.fromCharCode(parseInt(hex, 16))
+          i += 6
+          continue
+        }
+        out += next
+      } else {
+        out += next
+      }
+      i += 2
+      continue
+    }
+    if (ch === '"') break
+    out += ch
+    i++
+  }
+  return out
+}
+
+/** Parse the final localization JSON payload. Tries strict JSON.parse
+ *  first; if that fails (commonly because the model emitted unescaped
+ *  quotes inside content_markdown), falls back to lenient extraction
+ *  that uses the schema's known structure: content_markdown is
+ *  followed by `, "annotations": [`, and annotations is a separable
+ *  JSON array. Returns null only if extraction also fails. */
+function parseLocalizeResponse(buffer: string): { content_markdown: string; annotations: Annotation[] } | null {
+  const stripped = stripCodeFence(buffer).trim()
+
+  // Strict path — works when the model escaped everything correctly.
+  try {
+    const parsed = JSON.parse(stripped) as { content_markdown?: unknown; annotations?: unknown }
+    if (typeof parsed.content_markdown === 'string') {
+      const annotations = Array.isArray(parsed.annotations)
+        ? (parsed.annotations.filter(a => {
+            if (!a || typeof a !== 'object') return false
+            const t = (a as { type?: unknown }).type
+            return t === 'adaptation' || t === 'question'
+          }) as Annotation[])
+        : []
+      return { content_markdown: parsed.content_markdown, annotations }
+    }
+  } catch {
+    // fall through to lenient
+  }
+
+  // Lenient path — relies on the schema's known structure. Find the
+  // "content_markdown": " opener, then walk forward looking for the
+  // distinctive end-of-value sequence `",\s*"annotations"`. Anything in
+  // between (including unescaped inner quotes) becomes the content.
+  const mdOpener = stripped.match(/"content_markdown"\s*:\s*"/)
+  if (!mdOpener) return null
+  const start = (mdOpener.index ?? 0) + mdOpener[0].length
+  const annsPattern = /",\s*"annotations"\s*:\s*\[/
+  const annsMatch = stripped.slice(start).match(annsPattern)
+  if (!annsMatch) return null
+  const rawValue = stripped.slice(start, start + (annsMatch.index ?? 0))
+  // Decode standard JSON escapes; leave unescaped quotes and backslashes
+  // alone so the markdown reads naturally.
+  const content_markdown = rawValue
+    .replace(/\\n/g, '\n')
+    .replace(/\\r/g, '\r')
+    .replace(/\\t/g, '\t')
+    .replace(/\\"/g, '"')
+    .replace(/\\\\/g, '\\')
+  // Try to parse the annotations array on its own — most failures we've
+  // seen are inside content_markdown, not the structured annotation list.
+  const annsStart = start + (annsMatch.index ?? 0) + (annsMatch[0].length - 1) // position of `[`
+  let annotations: Annotation[] = []
+  // Find the matching `]` for the annotations array, accounting for
+  // nested brackets and strings.
+  let depth = 0
+  let inString = false
+  let escapeNext = false
+  let annsEnd = -1
+  for (let i = annsStart; i < stripped.length; i++) {
+    const ch = stripped[i]
+    if (escapeNext) { escapeNext = false; continue }
+    if (ch === '\\' && inString) { escapeNext = true; continue }
+    if (ch === '"') { inString = !inString; continue }
+    if (inString) continue
+    if (ch === '[') depth++
+    else if (ch === ']') { depth--; if (depth === 0) { annsEnd = i; break } }
+  }
+  if (annsEnd !== -1) {
+    try {
+      const annsArr = JSON.parse(stripped.slice(annsStart, annsEnd + 1)) as unknown[]
+      annotations = annsArr.filter(a => {
+        if (!a || typeof a !== 'object') return false
+        const t = (a as { type?: unknown }).type
+        return t === 'adaptation' || t === 'question'
+      }) as Annotation[]
+    } catch {
+      // give up on annotations but still return content
+    }
+  }
+
+  return { content_markdown, annotations }
+}
+
+/** Escape a string for safe interpolation inside an HTML attribute. */
+function escAttr(s: string): string {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+}
+
+/** Walk text nodes inside `root` and wrap the FIRST occurrence of `phrase`
+ *  in a <span class="adapt"> with the data-attrs the CSS chip reads from.
+ *  Skips matches already inside an existing .adapt span. Returns true if a
+ *  match was found and wrapped. */
+function wrapFirstPhrase(root: Element, ann: AdaptAnnotation): boolean {
+  const phrase = ann.phrase
+  if (!phrase || phrase.length < 2) return false
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+    acceptNode: (node) => {
+      // Skip text already inside an annotation, in a question card, or in
+      // attribute-laden non-content elements (style/script).
+      let p: Node | null = node.parentNode
+      while (p && p !== root) {
+        if (p.nodeType === 1) {
+          const el = p as Element
+          if (el.classList.contains('adapt')) return NodeFilter.FILTER_REJECT
+          if (el.classList.contains('ff-q-card')) return NodeFilter.FILTER_REJECT
+          const tag = el.tagName.toLowerCase()
+          if (tag === 'script' || tag === 'style') return NodeFilter.FILTER_REJECT
+        }
+        p = p.parentNode
+      }
+      return NodeFilter.FILTER_ACCEPT
+    },
+  })
+  let n: Node | null
+  while ((n = walker.nextNode())) {
+    const text = n as Text
+    const idx = text.data.indexOf(phrase)
+    if (idx === -1) continue
+    const before = text.data.slice(0, idx)
+    const match = text.data.slice(idx, idx + phrase.length)
+    const after = text.data.slice(idx + phrase.length)
+    const span = document.createElement('span')
+    span.className = 'adapt'
+    span.setAttribute('data-from', ann.from)
+    span.setAttribute('data-rationale', ann.rationale)
+    span.setAttribute('data-category', ann.category)
+    span.textContent = match
+    const parent = text.parentNode!
+    if (after) parent.insertBefore(document.createTextNode(after), text.nextSibling)
+    parent.insertBefore(span, text.nextSibling)
+    if (before) text.data = before
+    else parent.removeChild(text)
+    return true
+  }
+  return false
+}
+
+/** Take parsed-marked HTML for a localization's content and overlay its
+ *  annotations: violet underlines for adaptations, amber inline cards for
+ *  questions slotted after their `after_paragraph_index` paragraph. */
+function applyAnnotationsToHtml(html: string, annotations: Annotation[], localeId: string): string {
+  if (!annotations.length) return html
+  const wrap = document.createElement('div')
+  wrap.innerHTML = html
+
+  // Wrap adaptations FIRST (before slotting in question cards which would
+  // confuse the paragraph index).
+  for (const ann of annotations) {
+    if (ann.type !== 'adaptation') continue
+    wrapFirstPhrase(wrap, ann)
+  }
+
+  // Slot question cards. Index counts top-level <p> children so headings
+  // and lists don't shift the count. Question with after_paragraph_index=2
+  // lands AFTER the third <p>.
+  const paragraphs = Array.from(wrap.children).filter(c => c.tagName.toLowerCase() === 'p') as HTMLElement[]
+  // Sort questions by after_paragraph_index descending so insertions don't
+  // invalidate indices for later inserts.
+  const questions = annotations
+    .map((a, i) => ({ a, i }))
+    .filter((x): x is { a: QuestionAnnotation; i: number } => x.a.type === 'question')
+    .sort((x, y) => y.a.after_paragraph_index - x.a.after_paragraph_index)
+
+  for (const { a: q, i: annIdx } of questions) {
+    const idx = Math.max(0, Math.min(q.after_paragraph_index, paragraphs.length - 1))
+    const anchor = paragraphs[idx]
+    if (!anchor) continue
+    const card = document.createElement('div')
+    card.className = 'ff-q-card'
+    card.setAttribute('contenteditable', 'false')
+    card.setAttribute('data-q-locale', localeId)
+    card.setAttribute('data-q-index', String(annIdx))
+    card.setAttribute('data-resolved', q.status === 'resolved' ? 'true' : 'false')
+    const sparkSvg = `<svg class="ff-q-spark" viewBox="0 0 14 14" fill="none" aria-hidden="true"><path d="M7 1l1.4 4 4 1.5-4 1.5L7 12l-1.4-4-4-1.5 4-1.5L7 1z" fill="#BA7517"/></svg>`
+    if (q.status === 'resolved' && q.resolution_text) {
+      card.innerHTML = `
+        <div class="ff-q-head">${sparkSvg}<span>${escAttr(q.category || 'AI question')} · resolved</span></div>
+        <p class="ff-q-text">${escAttr(q.question_text)}</p>
+        <div class="ff-q-resolved">${escAttr(q.resolution_text)}</div>
+      `
+    } else {
+      card.innerHTML = `
+        <div class="ff-q-head">${sparkSvg}<span>AI question · ${escAttr(q.category || '')}</span></div>
+        <p class="ff-q-text">${escAttr(q.question_text)}</p>
+        <div class="ff-q-reply">
+          <input type="text" class="ff-q-input" data-q-input="${escAttr(localeId + ':' + annIdx)}"
+            placeholder="${escAttr(q.default_resolution || 'Type a quick answer…')}" />
+          <ff-brand-button size="sm" data-q-action="send" data-q-locale="${escAttr(localeId)}" data-q-index="${annIdx}">
+            Send
+          </ff-brand-button>
+        </div>
+      `
+    }
+    if (anchor.nextSibling) wrap.insertBefore(card, anchor.nextSibling)
+    else wrap.appendChild(card)
+  }
+
+  return wrap.innerHTML
+}
 
 // ── Region / language normalization ───────────────────────────────────────
 // CMS data uses short codes ("us", "en"); the right-rail dropdown speaks full
@@ -245,6 +555,11 @@ class FFApp extends LitElement {
     document.addEventListener('keydown', this._onDocKeydownCloseRefine)
     document.addEventListener('mousemove', this._onSparkleMove)
     document.addEventListener('mousemove', this._onCameoMove)
+    // Delegated handler for question-card Send / Enter inside an inline
+    // localization question card. Capture phase so it runs before the
+    // article-body editor's own focus management.
+    document.addEventListener('click', this._onQuestionCardClick, true)
+    document.addEventListener('keydown', this._onQuestionCardKey, true)
   }
 
   override disconnectedCallback() {
@@ -255,7 +570,47 @@ class FFApp extends LitElement {
     document.removeEventListener('keydown', this._onDocKeydownCloseRefine)
     document.removeEventListener('mousemove', this._onSparkleMove)
     document.removeEventListener('mousemove', this._onCameoMove)
+    document.removeEventListener('click', this._onQuestionCardClick, true)
+    document.removeEventListener('keydown', this._onQuestionCardKey, true)
     if (this._genMessageTimer != null) { clearInterval(this._genMessageTimer); this._genMessageTimer = null }
+  }
+
+  /** Send-button click anywhere inside an .ff-q-card. The button is an
+   *  ff-brand-button with data-q-action="send" (the click bubbles up from
+   *  the inner native button). Reads the sibling input's value and fires
+   *  resolution. */
+  private _onQuestionCardClick = (e: MouseEvent) => {
+    const target = e.target as HTMLElement | null
+    if (!target) return
+    const sendBtn = target.closest?.('[data-q-action="send"]') as HTMLElement | null
+    if (!sendBtn) return
+    const card = sendBtn.closest('.ff-q-card') as HTMLElement | null
+    if (!card) return
+    e.preventDefault()
+    e.stopPropagation()
+    const localeId = card.getAttribute('data-q-locale') ?? ''
+    const annIdxStr = card.getAttribute('data-q-index') ?? ''
+    const annIdx = parseInt(annIdxStr, 10)
+    const input = card.querySelector('.ff-q-input') as HTMLInputElement | null
+    const reply = (input?.value || '').trim()
+    void this._resolveQuestion(localeId, annIdx, reply)
+  }
+
+  /** Enter key inside the reply input submits like the Send button. */
+  private _onQuestionCardKey = (e: KeyboardEvent) => {
+    if (e.key !== 'Enter') return
+    const target = e.target as HTMLElement | null
+    if (!target) return
+    if (!target.matches?.('.ff-q-input')) return
+    const card = target.closest('.ff-q-card') as HTMLElement | null
+    if (!card) return
+    e.preventDefault()
+    e.stopPropagation()
+    const localeId = card.getAttribute('data-q-locale') ?? ''
+    const annIdxStr = card.getAttribute('data-q-index') ?? ''
+    const annIdx = parseInt(annIdxStr, 10)
+    const reply = ((target as HTMLInputElement).value || '').trim()
+    void this._resolveQuestion(localeId, annIdx, reply)
   }
 
   /** Close the toolbar Refine popover when the user clicks anywhere else. */
@@ -432,6 +787,14 @@ class FFApp extends LitElement {
     this._hydrateMeta(entry)
     this._undoStack = []
     this._redoStack = []
+    // Localizations are in-memory only and don't persist with entries yet.
+    this._localizations = []
+    this._activeLocale = null
+    this._sourceOutput = ''
+    this._draftingLocales = new Set()
+    this._abortByLocale.forEach(c => c.abort())
+    this._abortByLocale.clear()
+    this._showOriginalOpen = false
   }
 
   private _deleteEntry = (e: CustomEvent<string>) => {
@@ -519,6 +882,13 @@ class FFApp extends LitElement {
     this._resetMeta()
     this._undoStack = []
     this._redoStack = []
+    this._localizations = []
+    this._activeLocale = null
+    this._sourceOutput = ''
+    this._draftingLocales = new Set()
+    this._abortByLocale.forEach(c => c.abort())
+    this._abortByLocale.clear()
+    this._showOriginalOpen = false
   }
 
   private _enterEditor(creationMode: 'ai' | 'manual') {
@@ -893,9 +1263,14 @@ class FFApp extends LitElement {
   }
 
   private _save() {
-    if (!this.output.trim()) return
+    // Localizations are in-memory only — always persist the source content.
+    // If a localization tab is active, capture its current edits first so
+    // tab-switching after save still has the right content.
+    if (this._activeLocale !== null) this._syncActiveLocaleFromOutput()
+    const sourceContent = this._activeLocale === null ? this.output : this._sourceOutput
+    if (!sourceContent.trim()) return
     // Persist the stripped version so saved entries don't carry CTA/Meta/Alt sections
-    const cleaned = this.contentType === 'article' ? stripPublishingSections(this.output) : this.output
+    const cleaned = this.contentType === 'article' ? stripPublishingSections(sourceContent) : sourceContent
     const payload = {
       contentType: this.contentType,
       audience: this.audience,
@@ -1392,7 +1767,7 @@ class FFApp extends LitElement {
 
     return html`
       <!-- STICKY ACTION AREA — always visible at top -->
-      <div class="sticky top-0 z-10 bg-gray-50/95 backdrop-blur-sm border-b border-gray-200 px-5 py-4 flex flex-col gap-2.5">
+      <div class="sticky top-0 z-10 bg-gray-50 border-b border-gray-200 px-5 py-4 flex flex-col gap-2.5">
         <div class="flex items-center gap-2">
           <span class="inline-flex items-center gap-1.5 text-[11px] font-semibold px-2.5 py-1 rounded-full ${statusTone}">
             <span class="h-1.5 w-1.5 rounded-full bg-current"></span>
@@ -1410,13 +1785,15 @@ class FFApp extends LitElement {
         </button>
 
         ${s === 'draft' || s === 'trash' ? html`
-          <button @click=${() => this._submitForReview()}
+          <ff-brand-button
+            size="lg"
+            class="self-center"
             ?disabled=${!readyForReview}
             title=${readyForReview ? 'Submit for publishing review' : 'Complete required items first'}
-            class="w-full px-4 py-3 rounded-lg ${readyForReview ? 'bg-[#063853] hover:bg-[#04293D]' : 'bg-gray-300'} text-white text-[13px] font-semibold transition-colors flex items-center justify-center gap-2 disabled:cursor-not-allowed">
+            @click=${() => this._submitForReview()}>
             Submit for review
-            <svg width="11" height="11" viewBox="0 0 12 12" fill="none"><path d="M3 6h6m-2-3l3 3-3 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
-          </button>
+            <svg slot="trailing" width="11" height="11" viewBox="0 0 12 12" fill="none"><path d="M3 6h6m-2-3l3 3-3 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </ff-brand-button>
           ${!hasOutput ? html`
             <p class="text-[11px] text-gray-400 text-center">
               ${this.creationMode === 'manual' ? 'Start writing to enable review.' : 'Generate or write a draft first.'}
@@ -1481,7 +1858,7 @@ class FFApp extends LitElement {
 
     return html`
       <div class="px-5 pt-4">
-        <div class="rounded-xl border ${isPublished ? 'border-emerald-200 bg-emerald-50/50' : s === 'approved' ? 'border-blue-200 bg-blue-50/40' : 'border-amber-200 bg-amber-50/40'} overflow-hidden">
+        <div class="rounded-xl border ${isPublished ? 'border-emerald-200 bg-emerald-50' : s === 'approved' ? 'border-blue-200 bg-blue-50' : 'border-amber-200 bg-amber-50'} overflow-hidden">
           <div class="px-4 py-3 border-b ${isPublished ? 'border-emerald-100' : s === 'approved' ? 'border-blue-100' : 'border-amber-100'} flex items-center gap-2.5">
             <span class="flex items-center justify-center w-7 h-7 rounded-lg ${isPublished ? 'bg-emerald-100 text-emerald-700' : s === 'approved' ? 'bg-blue-100 text-blue-700' : 'bg-amber-100 text-amber-700'}">
               <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
@@ -1522,13 +1899,15 @@ class FFApp extends LitElement {
 
             ${!isPublished ? html`
               <div class="flex flex-col gap-2 pt-1">
-                <button @click=${() => this._publish()}
+                <ff-brand-button
+                  size="lg"
+                  class="self-center"
                   ?disabled=${!canPublish}
                   title=${canPublish ? 'Publish this content' : 'Enter a reviewer name and confirm the checkbox'}
-                  class="w-full px-4 py-2.5 rounded-lg ${canPublish ? 'bg-[#063853] hover:bg-[#04293D]' : 'bg-gray-300'} text-white text-[13px] font-semibold transition-colors flex items-center justify-center gap-2 disabled:cursor-not-allowed">
+                  @click=${() => this._publish()}>
                   Publish
-                  <svg width="11" height="11" viewBox="0 0 12 12" fill="none"><path d="M3 6h6m-2-3l3 3-3 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
-                </button>
+                  <svg slot="trailing" width="11" height="11" viewBox="0 0 12 12" fill="none"><path d="M3 6h6m-2-3l3 3-3 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                </ff-brand-button>
                 <button @click=${() => this._saveReview()}
                   ?disabled=${!canSaveReview}
                   title=${canSaveReview ? 'Mark this as Ready to publish without publishing yet' : 'Enter a reviewer name and confirm the checkbox'}
@@ -1595,7 +1974,7 @@ class FFApp extends LitElement {
       `
     }
     return html`
-      <div class="rounded-lg border border-amber-200 bg-amber-50/60 p-3">
+      <div class="rounded-lg border border-amber-200 bg-amber-50 p-3">
         <p class="text-[12.5px] font-semibold text-amber-900">Before publishing</p>
         <p class="text-[11px] text-amber-700 mt-0.5 mb-2.5">Complete these required items first.</p>
         <div class="flex flex-col gap-0.5">
@@ -2333,6 +2712,7 @@ class FFApp extends LitElement {
         ${this._renderRewriteCard()}
         ${this._renderSlashMenu()}
         ${this._renderLinkModal()}
+        ${this._renderLocalizeModal()}
         ${this.showKeyPrompt ? this._renderKeyPrompt() : ''}
         ${this._aiFlipPromptOpen ? this._renderAiFlipPrompt() : ''}
         ${this._renderConfetti()}
@@ -2422,11 +2802,11 @@ class FFApp extends LitElement {
             <button class="text-[12px] font-semibold px-3 py-2 rounded-lg text-gray-700 hover:bg-gray-100"
               @click=${() => { this._helpStep = i - 1 }}>Back</button>
           ` : ''}
-          <button class="text-[12px] font-semibold px-4 py-2 rounded-lg bg-[#063853] hover:bg-[#04293D] text-white"
+          <ff-brand-button
             @click=${() => {
               if (isLast) { this._helpOpen = false }
               else { this._helpStep = i + 1 }
-            }}>${isLast ? 'Get started' : 'Next'}</button>
+            }}>${isLast ? 'Get started' : 'Next'}</ff-brand-button>
         </div>
       </div>
     `
@@ -2456,10 +2836,9 @@ class FFApp extends LitElement {
       <div class="flex items-center justify-between px-6 py-3 border-t border-gray-100 shrink-0 gap-3">
         <button class="text-[12px] text-gray-500 hover:text-[#063853] hover:underline px-2 py-1.5"
           @click=${() => { this._helpView = 'onboarding'; this._helpStep = 0 }}>← Quick walkthrough</button>
-        <button @click=${() => { this._helpOpen = false }}
-          class="text-[12px] font-semibold px-4 py-2 rounded-lg bg-[#063853] hover:bg-[#04293D] text-white">
+        <ff-brand-button @click=${() => { this._helpOpen = false }}>
           Got it
-        </button>
+        </ff-brand-button>
       </div>
     `
   }
@@ -2612,6 +2991,24 @@ class FFApp extends LitElement {
             class="absolute inset-0 w-full h-full object-cover"
             @error=${(e: Event) => { (e.target as HTMLImageElement).style.display = 'none' }} />
         </button>
+      </div>
+    `
+  }
+
+  private _renderPenLoader() {
+    const typeLabel = V2_TYPE_LABELS[this.contentType] ?? this.contentType
+    const message = `Drafting your ${typeLabel.toLowerCase()}…`
+    return html`
+      <div class="flex-1 flex flex-col items-center justify-center gap-5 px-12"
+        role="status" aria-live="polite" aria-busy="true">
+        <svg class="ff-pen-stage" width="80" height="40" viewBox="0 0 80 40" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+          <line class="ff-pen-line" x1="12" y1="28" x2="68" y2="28"/>
+          <g class="ff-pen-tip" transform="translate(12, 16)">
+            <path d="M0 12 L8 0 L12 4 L4 16 Z" fill="#063853"/>
+            <circle cx="2" cy="13" r="1.5" fill="#7c70e3"/>
+          </g>
+        </svg>
+        <p class="text-[13px] text-gray-500 m-0">${message}</p>
       </div>
     `
   }
@@ -2802,8 +3199,7 @@ class FFApp extends LitElement {
                     </div>
                   </div>
                   <div class="flex justify-end mt-3">
-                    <button @click=${() => { this._regionPickerOpen = false }}
-                      class="text-[11px] font-semibold px-3 py-1.5 rounded-md bg-[#063853] hover:bg-[#04293D] text-white">Done</button>
+                    <ff-brand-button size="sm" @click=${() => { this._regionPickerOpen = false }}>Done</ff-brand-button>
                   </div>
                 </div>
               ` : ''}
@@ -2918,14 +3314,14 @@ class FFApp extends LitElement {
                     </button>
                   `
                   : html`
-                    <button @click=${() => this._generate()}
-                      ?disabled=${!this.topic.trim()}
-                      class="h-12 rounded-lg font-bold text-[15px] text-white flex items-center justify-center gap-2 transition-colors ${
-                        this.topic.trim() ? 'bg-[#063853] hover:bg-[#04293D] active:scale-[0.98]' : 'bg-[#063853]/40 cursor-not-allowed'
-                      }">
-                      <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 1L8.5 5L12.5 7L8.5 8.5L7 13L5.5 8.5L1.5 7L5.5 5L7 1Z" fill="currentColor"/></svg>
+                    <ff-brand-button
+                      size="lg"
+                      class="self-center"
+                      @click=${() => this._generate()}
+                      ?disabled=${!this.topic.trim()}>
+                      <svg slot="icon" width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 1L8.5 5L12.5 7L8.5 8.5L7 13L5.5 8.5L1.5 7L5.5 5L7 1Z" fill="currentColor"/></svg>
                       ${this.output ? 'Regenerate' : 'Generate draft'}
-                    </button>
+                    </ff-brand-button>
                   `}
                 <p class="text-[11px] text-center text-gray-400">⌘ + Enter</p>
 
@@ -2952,7 +3348,8 @@ class FFApp extends LitElement {
 
         <!-- CENTER: output -->
         <main class="flex-1 flex flex-col overflow-hidden min-w-0 bg-white relative">
-          ${this.output && !this.isGenerating ? this._renderCenterToolbar() : ''}
+          ${!this.isGenerating ? this._renderCenterToolbar() : ''}
+          ${this._renderVariantTabs()}
           ${this.error ? html`
             <div class="shrink-0 mx-4 sm:mx-6 mt-3 px-3 py-2 rounded-lg bg-red-50 border border-red-200 text-[12px] text-red-700 flex items-start gap-2"
               role="alert" aria-live="polite">
@@ -2961,14 +3358,15 @@ class FFApp extends LitElement {
               <button @click=${() => { this.error = '' }} class="text-red-400 hover:text-red-600 px-1" aria-label="Dismiss error">×</button>
             </div>
           ` : ''}
-          ${this.isGenerating && !this.output.trim()
+          ${this.isGenerating && !this.output.trim() && this.contentType === 'article'
             ? this._renderGeneratingOverlay()
             : this._renderCenter()}
+          ${this._renderShowOriginalPanel()}
         </main>
 
         <!-- RIGHT RAIL -->
         <aside
-          class="bg-gray-50/40 border-l border-gray-100 flex flex-col overflow-y-auto scrollbar-thin
+          class="bg-gray-50 border-l border-gray-100 flex flex-col overflow-y-auto scrollbar-thin
             lg:w-[300px] lg:min-w-[300px] lg:relative lg:inset-y-0 lg:translate-x-0 lg:shadow-none
             fixed inset-y-12 right-0 z-40 w-[320px] max-w-[85vw] shadow-2xl transition-transform duration-200
             ${railOpen ? 'translate-x-0' : 'translate-x-full lg:translate-x-0'}"
@@ -3009,35 +3407,38 @@ class FFApp extends LitElement {
   private _renderCenterToolbar() {
     const canUndo = this._undoStack.length > 0
     const canRedo = this._redoStack.length > 0
+    const hasDraft = !!this.output
     return html`
       <div class="shrink-0 flex items-center justify-between px-6 h-10 border-b border-gray-100 bg-white">
         <div class="flex items-center gap-1">
-          <button @click=${() => this._undo()}
-            ?disabled=${!canUndo}
-            title="Undo (⌘Z)"
-            class="w-8 h-8 flex items-center justify-center rounded-md transition-colors ${canUndo ? 'text-gray-600 hover:bg-gray-100' : 'text-gray-300 cursor-not-allowed'}">
-            <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-              <path d="M2 5h6a4 4 0 010 8H5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
-              <path d="M4.5 2.5L2 5l2.5 2.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
-            </svg>
-          </button>
-          <button @click=${() => this._redo()}
-            ?disabled=${!canRedo}
-            title="Redo (⇧⌘Z)"
-            class="w-8 h-8 flex items-center justify-center rounded-md transition-colors ${canRedo ? 'text-gray-600 hover:bg-gray-100' : 'text-gray-300 cursor-not-allowed'}">
-            <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-              <path d="M12 5H6a4 4 0 000 8h3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
-              <path d="M9.5 2.5L12 5l-2.5 2.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
-            </svg>
-          </button>
-          <span class="w-px h-5 bg-gray-200 mx-1"></span>
-          <span class="text-[11px] text-gray-400 inline-flex items-center gap-1.5">
-            <span class="font-mono px-1.5 py-0.5 rounded bg-gray-100 text-gray-500">/</span>
-            for blocks
-          </span>
+          ${hasDraft ? html`
+            <button @click=${() => this._undo()}
+              ?disabled=${!canUndo}
+              title="Undo (⌘Z)"
+              class="w-8 h-8 flex items-center justify-center rounded-md transition-colors ${canUndo ? 'text-gray-600 hover:bg-gray-100' : 'text-gray-300 cursor-not-allowed'}">
+              <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                <path d="M2 5h6a4 4 0 010 8H5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+                <path d="M4.5 2.5L2 5l2.5 2.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </button>
+            <button @click=${() => this._redo()}
+              ?disabled=${!canRedo}
+              title="Redo (⇧⌘Z)"
+              class="w-8 h-8 flex items-center justify-center rounded-md transition-colors ${canRedo ? 'text-gray-600 hover:bg-gray-100' : 'text-gray-300 cursor-not-allowed'}">
+              <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                <path d="M12 5H6a4 4 0 000 8h3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+                <path d="M9.5 2.5L12 5l-2.5 2.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </button>
+            <span class="w-px h-5 bg-gray-200 mx-1"></span>
+            <span class="text-[11px] text-gray-400 inline-flex items-center gap-1.5">
+              <span class="font-mono px-1.5 py-0.5 rounded bg-gray-100 text-gray-500">/</span>
+              for blocks
+            </span>
+          ` : ''}
         </div>
         <div class="flex items-center gap-2 text-[11px] text-gray-400">
-          ${this.contentType === 'article' ? html`
+          ${hasDraft && this.contentType === 'article' ? html`
             <span class="inline-flex items-center gap-1.5">
               <span class="font-mono px-1.5 py-0.5 rounded bg-gray-100 text-gray-500">⌘B</span>
               bold
@@ -3045,9 +3446,10 @@ class FFApp extends LitElement {
               italic
             </span>
           ` : ''}
-          <span class="w-px h-5 bg-gray-200 mx-1"></span>
+          ${hasDraft ? html`<span class="w-px h-5 bg-gray-200 mx-1"></span>` : ''}
 
           <!-- Refine the draft — primary AI action while writing. -->
+          ${hasDraft ? html`
           <div class="relative">
             <button
               @click=${(e: Event) => { e.stopPropagation(); this._refineOpen = !this._refineOpen }}
@@ -3095,16 +3497,671 @@ class FFApp extends LitElement {
               </div>
             ` : ''}
           </div>
+          ` : ''}
 
-          <button
-            @click=${() => { this._viewMode = this._viewMode === 'source' ? 'edit' : 'source' }}
-            title="Toggle source / HTML view (admin)"
-            class="inline-flex items-center gap-1 px-2 py-1 rounded-md transition-colors ${this._viewMode === 'source' ? 'bg-violet-50 text-violet-700' : 'text-gray-500 hover:bg-gray-100'}">
-            <svg width="12" height="12" viewBox="0 0 14 14" fill="none">
-              <path d="M5 4L1.5 7L5 10M9 4l3.5 3L9 10" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
-            </svg>
-            <span class="text-[11px] font-semibold">${this._viewMode === 'source' ? 'Editing' : 'HTML'}</span>
-          </button>
+          ${hasDraft ? html`
+            <button
+              @click=${() => { this._viewMode = this._viewMode === 'source' ? 'edit' : 'source' }}
+              title="Toggle source / HTML view (admin)"
+              class="inline-flex items-center gap-1 px-2 py-1 rounded-md transition-colors ${this._viewMode === 'source' ? 'bg-violet-50 text-violet-700' : 'text-gray-500 hover:bg-gray-100'}">
+              <svg width="12" height="12" viewBox="0 0 14 14" fill="none">
+                <path d="M5 4L1.5 7L5 10M9 4l3.5 3L9 10" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+              <span class="text-[11px] font-semibold">${this._viewMode === 'source' ? 'Editing' : 'HTML'}</span>
+            </button>
+          ` : ''}
+        </div>
+      </div>
+    `
+  }
+
+  // ── Localization tabs ─────────────────────────────────────────────────────
+  // One horizontal tab strip above the editor. First tab = source (the
+  // writer's own region/language). Each entry in `_localizations` adds a tab.
+  // Last tab = "+ Add a country" sentinel that opens the picker. Active tab
+  // is whatever `_activeLocale` points to (null = source).
+
+  private _sourceTabLabel(): { flag: string; country: string } {
+    const entry = findLocaleByCountry(this.region)
+    if (entry?.flag) return { flag: entry.flag, country: this.region }
+    return { flag: regionFlag(this.region), country: this.region || 'Source' }
+  }
+
+  /** Top-of-editor tab strip. Always renders in the editor. */
+  private _renderVariantTabs() {
+    const source = this._sourceTabLabel()
+    const sourceActive = this._activeLocale === null
+    return html`
+      <div class="shrink-0 border-b border-gray-100 bg-white px-4 sm:px-6 flex items-end gap-0 overflow-x-auto scrollbar-thin">
+        <!-- Source tab — always first, never removable. -->
+        <button @click=${() => this._setActiveLocale(null)}
+          ?disabled=${this.isGenerating}
+          class="group relative shrink-0 px-3.5 pt-2 pb-2 text-[12.5px] transition-colors disabled:opacity-50 disabled:cursor-not-allowed
+            ${sourceActive ? 'text-[#1a1a1a] font-semibold' : 'text-gray-500 hover:text-gray-800 font-medium'}">
+          <span class="inline-flex items-center gap-1.5">
+            <span class="text-[14px] leading-none">${source.flag}</span>
+            <span>${source.country}</span>
+          </span>
+          ${sourceActive ? html`<span class="absolute left-2 right-2 -bottom-px h-[2px] bg-[#063853] rounded-t-sm"></span>` : ''}
+        </button>
+
+        <!-- Localization tabs. -->
+        ${this._localizations.map(loc => {
+          const active = this._activeLocale === loc.id
+          const drafting = this._draftingLocales.has(loc.id)
+          const openQuestions = loc.annotations.some(a => a.type === 'question' && a.status === 'open')
+          return html`
+            <div class="group relative shrink-0">
+              <button @click=${() => this._setActiveLocale(loc.id)}
+                ?disabled=${this.isGenerating && !drafting}
+                class="relative px-3.5 pt-2 pb-2 text-[12.5px] transition-colors disabled:opacity-50 disabled:cursor-not-allowed
+                  ${active ? 'text-[#1a1a1a] font-semibold' : 'text-gray-500 hover:text-gray-800 font-medium'}">
+                <span class="inline-flex items-center gap-1.5">
+                  <span class="text-[14px] leading-none">${loc.flag}</span>
+                  <span>${loc.country}</span>
+                  ${openQuestions ? html`<span class="inline-block w-1.5 h-1.5 rounded-full bg-[#BA7517]" title="Has open questions"></span>` : ''}
+                  ${drafting ? html`<span class="ff-loc-dot" aria-label="Drafting"></span>` : ''}
+                </span>
+                ${active ? html`<span class="absolute left-2 right-2 -bottom-px h-[2px] bg-[#063853] rounded-t-sm"></span>` : ''}
+              </button>
+              <button
+                @click=${(e: Event) => { e.stopPropagation(); this._removeLocalization(loc.id) }}
+                title="Remove ${loc.country}"
+                aria-label="Remove ${loc.country}"
+                class="opacity-0 group-hover:opacity-100 focus:opacity-100 absolute right-0.5 top-1.5 w-4 h-4 rounded-full inline-flex items-center justify-center text-gray-400 hover:text-red-600 hover:bg-red-50 transition-opacity">
+                <svg width="9" height="9" viewBox="0 0 10 10" fill="none">
+                  <path d="M2 2l6 6M8 2l-6 6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                </svg>
+              </button>
+            </div>
+          `
+        })}
+
+        <!-- "+ Add a country" sentinel. -->
+        <button @click=${() => this._openLocalize()}
+          ?disabled=${this.isGenerating}
+          class="shrink-0 px-3 pt-2 pb-2 text-[12.5px] italic text-gray-400 hover:text-gray-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+          + Add a country
+        </button>
+      </div>
+
+      ${this._activeLocale !== null ? this._renderLocalizationSubtitle() : ''}
+    `
+  }
+
+  /** Sub-line under the tab strip showing language · currency · regulator
+   *  for the active localization, plus the Show original peek toggle on
+   *  the right. Source tab has no subtitle. */
+  private _renderLocalizationSubtitle() {
+    const loc = this._localizations.find(l => l.id === this._activeLocale)
+    if (!loc) return ''
+    const parts = [loc.languageLabel, loc.currency, loc.regulator].filter(Boolean)
+    return html`
+      <div class="shrink-0 border-b border-gray-100 bg-white px-4 sm:px-6 py-1.5 flex items-center justify-between text-[11.5px] text-gray-500">
+        <span class="truncate">${parts.join(' · ')}</span>
+        ${this._sourceOutput.trim() ? html`
+          <ff-brand-button variant="ghost" size="sm"
+            @click=${() => { this._showOriginalOpen = !this._showOriginalOpen }}>
+            ${this._showOriginalOpen ? 'Hide original' : 'Show original'}
+          </ff-brand-button>
+        ` : ''}
+      </div>
+    `
+  }
+
+  /** Slide-in right panel that previews the source markdown read-only.
+   *  Renders only when a localization is active and the toggle is on. */
+  private _renderShowOriginalPanel() {
+    if (!this._showOriginalOpen) return ''
+    if (this._activeLocale === null) return ''
+    const source = this._sourceOutput
+    if (!source.trim()) return ''
+    const html_ = this.contentType === 'article'
+      ? marked.parse(source) as string
+      : `<pre class="whitespace-pre-wrap font-mono text-[12px]">${source.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</pre>`
+    const sourceMeta = findLocaleByCountry(this.region)
+    const sourceLabel = `${sourceMeta?.flag ?? regionFlag(this.region)} ${this.region} · source`
+    return html`
+      <aside class="absolute top-0 right-0 bottom-0 w-1/2 z-30 bg-white border-l border-gray-200 shadow-xl flex flex-col ff-fade-in"
+        aria-label="Source content (read-only)">
+        <header class="shrink-0 flex items-center justify-between px-5 py-2.5 border-b border-gray-100 bg-gray-50">
+          <span class="text-[11.5px] font-bold tracking-widest uppercase text-gray-500">${sourceLabel}</span>
+          <button @click=${() => { this._showOriginalOpen = false }}
+            class="text-gray-400 hover:text-gray-700 text-[18px] leading-none px-1"
+            aria-label="Hide source">×</button>
+        </header>
+        <div class="flex-1 overflow-y-auto scrollbar-thin px-6 py-5 ff-prose text-[13.5px] select-text">
+          ${unsafeHTML(html_)}
+        </div>
+      </aside>
+    `
+  }
+
+  /** Persist current edits to the outgoing tab's storage, then load the
+   *  incoming tab's content into `output`. Source (null) ↔ localizations.
+   *  Clears undo so the user can't undo across a tab boundary. */
+  private _setActiveLocale(target: string | null) {
+    if (target === this._activeLocale) return
+    // Save outgoing
+    if (this._activeLocale === null) {
+      this._sourceOutput = this.output
+    } else {
+      const idx = this._localizations.findIndex(l => l.id === this._activeLocale)
+      if (idx !== -1) {
+        const updated = { ...this._localizations[idx], content_markdown: this.output, updatedAt: Date.now() }
+        this._localizations = [
+          ...this._localizations.slice(0, idx),
+          updated,
+          ...this._localizations.slice(idx + 1),
+        ]
+      }
+    }
+    // Load incoming
+    if (target === null) {
+      this.output = this._sourceOutput
+    } else {
+      const next = this._localizations.find(l => l.id === target)
+      if (next) this.output = next.content_markdown
+    }
+    this._activeLocale = target
+    this._undoStack = []
+    this._redoStack = []
+  }
+
+  /** Remove a localization tab. Confirms before deleting. Aborts any
+   *  in-flight stream for the tab. */
+  private _removeLocalization(id: string) {
+    const loc = this._localizations.find(l => l.id === id)
+    if (!loc) return
+    const drafting = this._draftingLocales.has(id)
+    const prompt = drafting
+      ? `Cancel the in-progress ${loc.country} version?`
+      : `Remove the ${loc.country} version? It's not saved anywhere yet.`
+    const ok = confirm(prompt)
+    if (!ok) return
+    // If drafting, the abort handler in _runLocalize will remove the tab
+    // and swap the editor back to source. Otherwise we clean up here.
+    if (drafting) {
+      this._abortByLocale.get(id)?.abort()
+      return
+    }
+    if (this._activeLocale === id) {
+      this.output = this._sourceOutput
+      this._activeLocale = null
+      this._undoStack = []
+      this._redoStack = []
+    }
+    this._localizations = this._localizations.filter(l => l.id !== id)
+  }
+
+  /** Persist any in-progress edits on the active tab into the underlying
+   *  store. Called from the editor's blur path so source vs. localization
+   *  edits stay synced. Safe to call repeatedly. */
+  private _syncActiveLocaleFromOutput() {
+    if (this._activeLocale === null) {
+      this._sourceOutput = this.output
+      return
+    }
+    const idx = this._localizations.findIndex(l => l.id === this._activeLocale)
+    if (idx === -1) return
+    const cur = this._localizations[idx]
+    if (cur.content_markdown === this.output) return
+    this._localizations = [
+      ...this._localizations.slice(0, idx),
+      { ...cur, content_markdown: this.output, updatedAt: Date.now() },
+      ...this._localizations.slice(idx + 1),
+    ]
+  }
+
+  private _openLocalize() {
+    this._localizeSelected = new Set()
+    this._localizeFilter = ''
+    this._localizeOpen = true
+  }
+
+  private _closeLocalize() {
+    this._localizeOpen = false
+  }
+
+  /** Toggle a country in the multi-select picker. */
+  private _toggleLocalizeCountry(country: string) {
+    const next = new Set(this._localizeSelected)
+    if (next.has(country)) next.delete(country)
+    else next.add(country)
+    this._localizeSelected = next
+  }
+
+  private _confirmLocalize() {
+    if (this._localizeSelected.size === 0) return
+    // Need source content to localize. If the writer is already on a
+    // localization tab, sync first so we work from the latest source.
+    if (this._activeLocale !== null) this._syncActiveLocaleFromOutput()
+    const sourceContent = this._activeLocale === null ? this.output : this._sourceOutput
+    if (!sourceContent.trim()) { this._localizeOpen = false; return }
+    if (!this._hasApiAccess()) { this.showKeyPrompt = true; this.keyDraft = ''; return }
+
+    const selected = Array.from(this._localizeSelected)
+      .map(country => findLocaleByCountry(country))
+      .filter((x): x is LocaleEntry => !!x)
+      // Skip countries already added.
+      .filter(entry => !this._localizations.some(l => l.id === entry.code))
+    if (selected.length === 0) { this._localizeOpen = false; return }
+
+    this._localizeOpen = false
+    this._localizeSelected = new Set()
+
+    // Snapshot source once (all parallel calls share it).
+    if (this._activeLocale === null) this._sourceOutput = this.output
+
+    // Spawn placeholder tabs first so the writer sees them all immediately.
+    const now = Date.now()
+    const placeholders: Localization[] = selected.map(entry => ({
+      id: entry.code,
+      country: entry.country,
+      flag: entry.flag ?? regionFlag(entry.country),
+      locale: entry.code,
+      languageLabel: entry.languageLabel ?? entry.label,
+      currency: entry.currency ?? '',
+      regulator: entry.regulator ?? '',
+      content_markdown: '',
+      annotations: [],
+      status: 'drafting',
+      createdAt: now,
+      updatedAt: now,
+    }))
+    this._localizations = [...this._localizations, ...placeholders]
+    // If nothing else is drafting, focus the first new tab so the writer
+    // sees its content stream in. If localizations are already drafting,
+    // leave the active tab alone — the writer can switch at will.
+    if (this._draftingLocales.size === 0 && selected[0]) {
+      this._activeLocale = selected[0].code
+      this.output = ''
+      this._undoStack = []
+      this._redoStack = []
+    }
+
+    // Fire all in parallel. Each call manages its own abort + drafting flag.
+    for (const entry of selected) void this._runLocalize(entry, sourceContent)
+  }
+
+  /** Stream a localized variant for `entry`. Parallel-safe: multiple
+   *  concurrent calls each manage their own abort controller and stream
+   *  into their own buffer. The active tab's `output` updates live;
+   *  background-drafting tabs persist their content to `_localizations`
+   *  on completion. Assumes the placeholder tab has already been added by
+   *  the caller (`_confirmLocalize`). */
+  private async _runLocalize(entry: LocaleEntry, sourceContent: string) {
+    // Already drafting this locale? Don't double-fire.
+    if (this._draftingLocales.has(entry.code)) return
+    // If no placeholder exists (e.g. legacy callers), add one.
+    if (!this._localizations.some(l => l.id === entry.code)) {
+      const now = Date.now()
+      this._localizations = [
+        ...this._localizations,
+        {
+          id: entry.code,
+          country: entry.country,
+          flag: entry.flag ?? regionFlag(entry.country),
+          locale: entry.code,
+          languageLabel: entry.languageLabel ?? entry.label,
+          currency: entry.currency ?? '',
+          regulator: entry.regulator ?? '',
+          content_markdown: '',
+          annotations: [],
+          status: 'drafting',
+          createdAt: now,
+          updatedAt: now,
+        },
+      ]
+    }
+
+    this._draftingLocales = new Set([...this._draftingLocales, entry.code])
+    this.error = ''
+    if (this._activeLocale === entry.code) this.output = ''
+
+    const useJson = this.contentType !== 'article'
+    const prompt = this._buildLocalizePrompt(sourceContent, entry, useJson)
+
+    const controller = new AbortController()
+    this._abortByLocale.set(entry.code, controller)
+    this.isGenerating = true
+
+    let buffer = ''
+    try {
+      await streamMessage(this.apiKey, [{ role: 'user', content: prompt }],
+        useJson ? JSON_SYSTEM_PROMPT : SYSTEM_PROMPT,
+        (chunk) => {
+          buffer += chunk
+          // Only update visible `output` when this is the active tab.
+          // Background drafts accumulate silently in their own buffer.
+          if (this._activeLocale === entry.code) {
+            const preview = extractStreamingMarkdown(buffer)
+            this.output = preview ?? buffer
+          }
+        },
+        controller.signal,
+        12288,
+      )
+
+      const parsed = parseLocalizeResponse(buffer)
+      const finalContent = parsed?.content_markdown ?? buffer.trim()
+      const annotations = parsed?.annotations ?? []
+
+      const idx = this._localizations.findIndex(l => l.id === entry.code)
+      if (idx !== -1) {
+        this._localizations = [
+          ...this._localizations.slice(0, idx),
+          {
+            ...this._localizations[idx],
+            content_markdown: finalContent,
+            annotations,
+            status: 'ready',
+            updatedAt: Date.now(),
+          },
+          ...this._localizations.slice(idx + 1),
+        ]
+      }
+      if (this._activeLocale === entry.code) {
+        this.output = finalContent
+        this._articleBodyForceSync = true
+      }
+      this.isDirty = true
+    } catch (err) {
+      if (err instanceof Error && err.name === 'AbortError') {
+        // Aborted: drop the half-built tab. If it was active, swap back.
+        this._localizations = this._localizations.filter(l => l.id !== entry.code)
+        if (this._activeLocale === entry.code) {
+          this._activeLocale = null
+          this.output = this._sourceOutput
+        }
+      } else {
+        this.error = err instanceof Error ? err.message : 'Localize failed.'
+        // Leave the drafting tab in place so the writer sees the failure
+        // and can retry by removing + re-adding the country.
+      }
+    } finally {
+      const next = new Set(this._draftingLocales)
+      next.delete(entry.code)
+      this._draftingLocales = next
+      this._abortByLocale.delete(entry.code)
+      if (this._draftingLocales.size === 0) this.isGenerating = false
+    }
+  }
+
+  /** A writer answered a question card. Regenerate the localization with
+   *  the answer baked into the prompt as steering, then mark the question
+   *  resolved. Falls back to the question's `default_resolution` when the
+   *  reply is empty. The whole variant gets re-rendered — simpler than
+   *  splicing a single paragraph and avoids index drift. */
+  private async _resolveQuestion(localeId: string, annIdx: number, replyText: string) {
+    if (this.isGenerating) return
+    const locIdx = this._localizations.findIndex(l => l.id === localeId)
+    if (locIdx === -1) return
+    const loc = this._localizations[locIdx]
+    const ann = loc.annotations[annIdx]
+    if (!ann || ann.type !== 'question') return
+
+    const reply = replyText.trim() || ann.default_resolution || ''
+    if (!reply) return
+
+    if (!this._hasApiAccess()) { this.showKeyPrompt = true; this.keyDraft = ''; return }
+
+    // Pull the locale's reference data for the regen prompt.
+    const localeEntry = findLocaleByCountry(loc.country) ?? {
+      country: loc.country, code: loc.locale, label: loc.languageLabel,
+      flag: loc.flag, languageLabel: loc.languageLabel, currency: loc.currency, regulator: loc.regulator,
+    }
+    const sourceContent = this._sourceOutput || (this._activeLocale === null ? this.output : '')
+    if (!sourceContent.trim()) return
+
+    // Mark the question as in-flight: clear pending questions on the same
+    // index so the UI shows progress. We re-set drafting on the locale.
+    this._draftingLocales = new Set([...this._draftingLocales, localeId])
+    this.error = ''
+    if (this._activeLocale === localeId) this.output = '' // visual reset
+
+    const useJson = this.contentType !== 'article'
+    const basePrompt = this._buildLocalizePrompt(sourceContent, localeEntry, useJson)
+    const steering = `\n\nWRITER GUIDANCE — A previous draft of this localization flagged a question. The writer answered it. Apply this guidance throughout the new localization and DO NOT re-emit a question annotation for the same topic.\n\nQuestion (${ann.category}): ${ann.question_text}\nWriter's answer: ${reply}\n`
+    const prompt = basePrompt + steering
+
+    // Cancel any prior in-flight stream for this locale before retrying.
+    this._abortByLocale.get(localeId)?.abort()
+    const controller = new AbortController()
+    this._abortByLocale.set(localeId, controller)
+    this.isGenerating = true
+
+    let buffer = ''
+    try {
+      await streamMessage(this.apiKey, [{ role: 'user', content: prompt }],
+        useJson ? JSON_SYSTEM_PROMPT : SYSTEM_PROMPT,
+        (chunk) => {
+          buffer += chunk
+          const preview = extractStreamingMarkdown(buffer)
+          if (this._activeLocale === localeId) {
+            this.output = preview ?? buffer
+          }
+        },
+        controller.signal,
+        12288,
+      )
+
+      const parsed = parseLocalizeResponse(buffer)
+      const finalContent = parsed?.content_markdown ?? buffer.trim()
+      // Mark THIS question resolved (with the writer's reply) so the card
+      // shows the answer instead of the input. The model's regenerated
+      // annotation list replaces the rest, but we preserve the resolution
+      // marker for any matching question by category+text.
+      const newAnnotations = (parsed?.annotations ?? []).map(a => {
+        if (a.type === 'question' && a.category === ann.category && a.question_text === ann.question_text) {
+          return { ...a, status: 'resolved' as const, resolution_text: reply }
+        }
+        return a
+      })
+      // Ensure the resolved-marker is present even if the model dropped it
+      // entirely (which the steering told it to do).
+      const stillHasIt = newAnnotations.some(a =>
+        a.type === 'question' && a.category === ann.category && a.question_text === ann.question_text
+      )
+      if (!stillHasIt) {
+        newAnnotations.push({
+          ...ann,
+          status: 'resolved',
+          resolution_text: reply,
+        })
+      }
+
+      this._localizations = [
+        ...this._localizations.slice(0, locIdx),
+        {
+          ...loc,
+          content_markdown: finalContent,
+          annotations: newAnnotations,
+          status: 'ready',
+          updatedAt: Date.now(),
+        },
+        ...this._localizations.slice(locIdx + 1),
+      ]
+      if (this._activeLocale === localeId) this.output = finalContent
+      this._articleBodyForceSync = true
+      this.isDirty = true
+    } catch (err) {
+      if (!(err instanceof Error && err.name === 'AbortError')) {
+        this.error = err instanceof Error ? err.message : 'Resolution failed.'
+      }
+      // Keep the original card in place so the writer can retry.
+      if (this._activeLocale === localeId) this.output = loc.content_markdown
+    } finally {
+      const next = new Set(this._draftingLocales)
+      next.delete(localeId)
+      this._draftingLocales = next
+      this._abortByLocale.delete(localeId)
+      if (this._draftingLocales.size === 0) this.isGenerating = false
+    }
+  }
+
+  /** Build the user prompt for a single localization pass. The model is
+   *  asked for a single JSON object: { content_markdown, annotations[] }.
+   *  See AdaptAnnotation / QuestionAnnotation in main.ts for the shape. */
+  private _buildLocalizePrompt(source: string, entry: LocaleEntry, useJson: boolean): string {
+    const country = entry.country
+    const language = entry.languageLabel ?? entry.label
+    const locale = entry.code
+    const currency = entry.currency || 'the local currency'
+    const regulator = entry.regulator || `${country}'s tax/financial regulator`
+    const sourceFormat = useJson
+      ? `The source content below is a JSON object. Translate string values only. Preserve every key, nesting, and array order. Set "content_markdown" in your output to the full localized JSON, serialized as a string.`
+      : `The source content below is markdown. Preserve heading levels, lists, tables, links, and any inline HTML/markdown formatting. Do NOT add or remove sections. Translate the title.`
+
+    return `You are localizing a Financial Finesse article from US English into ${language} for readers in ${country} (locale ${locale}).
+
+Translate fluently. Adapt currencies, regulators, idioms, and examples for the target country:
+- Convert US dollar amounts to ${currency} using realistic exchange rates as of October 2026.
+- Replace IRS / SSA / 401(k) / Roth IRA references with ${country}'s equivalents (${regulator} and the local retirement vehicle, if one exists).
+- Swap idioms, holidays, and cultural references for ones a reader in ${country} would recognize.
+
+Keep the Financial Finesse brand voice: a modern Midwesterner talking to a friend at the kitchen table. Plain-spoken, warm, direct. Never lofty, never corporate. Avoid em-dashes-as-commas, "let me explain", "the truth is", "in summary", or any banned aspirational phrasing (unleash, unlock, transform, journey, your best self, financial freedom, empower).
+
+${sourceFormat}
+
+OUTPUT — A single JSON object on its own, NO markdown fences, NO prose, NO trailing commentary. The JSON must have exactly these two keys:
+
+{
+  "content_markdown": "<the localized content>",
+  "annotations": [ ... ]
+}
+
+The "annotations" array contains entries of two shapes:
+
+ADAPTATION (mark each non-trivial adaptation you made — currency conversion, regulator swap, idiom swap, product swap, country-specific example):
+{
+  "type": "adaptation",
+  "phrase": "<EXACT verbatim substring as it appears in your localized content_markdown>",
+  "from": "<what it was in the source ($1,000)>",
+  "category": "currency" | "regulator" | "idiom" | "product" | "example" | "other",
+  "rationale": "<one short plain-English line, in English, e.g. 'Converted USD to MXN at 1:18.5'>"
+}
+
+QUESTION (use ONLY when you genuinely cannot decide — e.g. a US-specific stat with no local equivalent — rather than guessing):
+{
+  "type": "question",
+  "after_paragraph_index": <0-based paragraph index in your content_markdown where the writer will see the card>,
+  "category": "<short label like 'Stat' or 'Regulator'>",
+  "question_text": "<one short question for the writer>",
+  "default_resolution": "<a sensible fallback the writer can accept without typing>",
+  "status": "open"
+}
+
+Rules:
+- "phrase" MUST be a verbatim substring of your content_markdown — exact match including casing, punctuation, accents.
+- Aim for 5–10 high-signal adaptations. Don't annotate plain dictionary translations of common words.
+- Avoid one- or two-character phrases — they collide on highlighting.
+- Emit a question only when adapting would require guessing at a fact you don't know.
+- ESCAPE every double quote inside content_markdown as \\" — don't use typographic quotes ("smart quotes") and don't leave any " unescaped inside the content_markdown string. The whole output must be valid JSON.
+
+--- SOURCE CONTENT ---
+${source}`
+  }
+
+  private _renderLocalizeModal() {
+    if (!this._localizeOpen) return ''
+    const q = this._localizeFilter.trim().toLowerCase()
+    // Demo countries first (in display order), then everything else
+    // alphabetical. Search filters across the full list.
+    const demoSet = new Set(DEMO_COUNTRIES)
+    const demoEntries = DEMO_COUNTRIES
+      .map(c => LOCALES.find(l => l.country === c))
+      .filter((x): x is LocaleEntry => !!x)
+    const others = LOCALES.filter(l => !demoSet.has(l.country))
+    const ordered = [...demoEntries, ...others]
+    const filtered = !q
+      ? ordered
+      : ordered.filter(l =>
+          l.country.toLowerCase().includes(q) ||
+          l.code.toLowerCase().includes(q) ||
+          (l.label?.toLowerCase().includes(q) ?? false) ||
+          (l.languageLabel?.toLowerCase().includes(q) ?? false),
+        )
+    const alreadyAdded = (code: string) => this._localizations.some(l => l.id === code)
+    const count = this._localizeSelected.size
+    return html`
+      <div class="fixed inset-0 bg-black/40 z-50 flex items-center justify-center px-4 py-6"
+        @click=${(e: Event) => { if (e.target === e.currentTarget) this._closeLocalize() }}
+        @keydown=${(e: KeyboardEvent) => { if (e.key === 'Escape') { e.stopPropagation(); this._closeLocalize() } }}>
+        <div class="bg-white rounded-2xl shadow-2xl w-[560px] max-w-[calc(100vw-2rem)] flex flex-col max-h-[78vh] ff-fade-in"
+          role="dialog" aria-modal="true" aria-labelledby="ff-localize-title">
+
+          <div class="flex items-start justify-between px-5 py-4 border-b border-gray-100 shrink-0">
+            <div>
+              <h3 id="ff-localize-title" class="text-[15px] font-semibold text-[#1a1a1a]">Add countries</h3>
+              <p class="text-[12px] text-gray-500 mt-0.5">Pick one or more. Currency and regulator come along.</p>
+            </div>
+            <button @click=${() => this._closeLocalize()} class="text-gray-400 hover:text-gray-700 text-[20px] leading-none -mt-1" aria-label="Close">×</button>
+          </div>
+
+          <div class="px-5 py-3 border-b border-gray-100 shrink-0">
+            <input type="text" data-modal-autofocus="localize"
+              .value=${this._localizeFilter}
+              @input=${(e: Event) => { this._localizeFilter = (e.target as HTMLInputElement).value }}
+              placeholder="Search countries…"
+              class="w-full rounded-lg border border-gray-200 px-3 py-2 text-[13px] outline-none focus:border-gray-400" />
+          </div>
+
+          <div class="flex-1 overflow-y-auto scrollbar-thin">
+            ${filtered.length === 0 ? html`
+              <p class="px-5 py-6 text-[12px] text-gray-400 text-center">No countries match.</p>
+            ` : html`
+              <ul class="divide-y divide-gray-100">
+                ${filtered.map(l => {
+                  const checked = this._localizeSelected.has(l.country)
+                  const added = alreadyAdded(l.code)
+                  const sub = [l.languageLabel, l.currency, l.regulator].filter(Boolean).join(' · ') || l.label
+                  return html`
+                    <li>
+                      <button @click=${() => { if (!added) this._toggleLocalizeCountry(l.country) }}
+                        ?disabled=${added}
+                        role="checkbox"
+                        aria-checked=${checked ? 'true' : 'false'}
+                        class="w-full text-left px-5 py-2.5 flex items-center gap-3 transition-colors
+                          ${added ? 'opacity-50 cursor-not-allowed' : ''}
+                          ${checked ? 'bg-violet-50' : !added ? 'hover:bg-gray-50' : ''}">
+                        <span class="shrink-0 inline-flex items-center justify-center w-4 h-4 rounded border
+                          ${checked
+                            ? 'bg-violet-600 border-violet-600 text-white'
+                            : 'bg-white border-gray-300'}">
+                          ${checked ? html`
+                            <svg width="10" height="10" viewBox="0 0 14 14" fill="none">
+                              <path d="M2.5 7.5l3 3 6-6.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+                            </svg>
+                          ` : ''}
+                        </span>
+                        <span class="text-[18px] leading-none shrink-0">${l.flag ?? regionFlag(l.country)}</span>
+                        <span class="flex-1 min-w-0">
+                          <span class="block text-[13.5px] text-gray-900 ${checked ? 'font-semibold' : 'font-medium'} truncate">${l.country}</span>
+                          <span class="block text-[11px] text-gray-400 truncate">${sub}</span>
+                        </span>
+                        ${added ? html`<span class="text-[10.5px] font-semibold px-1.5 py-0.5 rounded bg-gray-100 text-gray-500 shrink-0">added</span>` : ''}
+                      </button>
+                    </li>
+                  `
+                })}
+              </ul>
+            `}
+          </div>
+
+          <div class="flex items-center justify-between gap-3 px-5 py-3 border-t border-gray-100 shrink-0">
+            <p class="text-[11px] text-gray-500 flex-1 min-w-0 truncate">
+              ${count > 0
+                ? html`<span class="text-gray-700 font-semibold">${count} selected</span>`
+                : 'Pick one or more to keep going.'}
+            </p>
+            <div class="flex items-center gap-2 shrink-0">
+              <ff-brand-button variant="ghost" size="sm" @click=${() => this._closeLocalize()}>Cancel</ff-brand-button>
+              <ff-brand-button size="sm" ?disabled=${count === 0} @click=${() => this._confirmLocalize()}>
+                ${count > 1 ? `Localize all (${count})` : 'Localize'}
+              </ff-brand-button>
+            </div>
+          </div>
         </div>
       </div>
     `
@@ -3226,6 +4283,14 @@ class FFApp extends LitElement {
           <p class="text-[14px] text-gray-500 max-w-md">Tell us what you want to make. We'll write a first draft in seconds. You'll edit and publish it.</p>
         </div>
       `
+    }
+
+    // While streaming a JSON-backed type, every chunk would otherwise re-trigger
+    // parseJsonContent / parsePartialJsonContent and render half-formed cards.
+    // Show a neutral loader instead until the stream completes; article streams
+    // markdown into a prose surface and doesn't need this guard.
+    if (this.isGenerating && this.contentType !== 'article') {
+      return this._renderPenLoader()
     }
 
     // Article — locked title section + read-time + divider + flowing body
@@ -4960,9 +6025,19 @@ class FFApp extends LitElement {
         const force = this._articleBodyForceSync
         this._articleBodyForceSync = false
         const isFocused = editor === active
-        if (!isFocused || force) {
+        // Skip sync if focus is inside the editor body OR inside a question
+        // card's reply input — both cases would clobber user typing.
+        const isReplyFocused = active?.closest?.('.ff-q-card') != null
+        if ((!isFocused && !isReplyFocused) || force) {
           const body = this._articleBody()
-          const expected = body ? (marked.parse(body) as string) : '<p><br></p>'
+          let expected = body ? (marked.parse(body) as string) : '<p><br></p>'
+          // Overlay annotations when viewing a localization tab.
+          if (body && this._activeLocale !== null) {
+            const loc = this._localizations.find(l => l.id === this._activeLocale)
+            if (loc && loc.annotations.length) {
+              expected = applyAnnotationsToHtml(expected, loc.annotations, loc.id)
+            }
+          }
           if (force || this._lastSyncedBodyHtml !== expected) {
             editor.innerHTML = expected
             this._lastSyncedBodyHtml = expected
@@ -5056,6 +6131,27 @@ class FFApp extends LitElement {
   @state() private _linkModalOpen = false
   @state() private _linkFilter = ''
   @state() private _linkEntries: ContentEntry[] = []
+
+  // Localization. _activeLocale is null when viewing the source (en-US).
+  // _localizations holds in-memory variant tabs for the current draft. Not
+  // persisted to ContentEntry yet — that's a later phase.
+  @state() private _activeLocale: string | null = null
+  @state() private _localizations: Localization[] = []
+  /** Snapshot of source `output` while a localization tab is active, so
+   *  switching back restores the user's source-side edits. */
+  private _sourceOutput = ''
+  /** Locale ids currently streaming. Multiple localizations can run in
+   *  parallel from the multi-select picker, so this is a set. */
+  @state() private _draftingLocales: Set<string> = new Set()
+  /** Per-locale abort controllers for in-flight streams. */
+  private _abortByLocale: Map<string, AbortController> = new Map()
+  /** Whether the Show Original peek panel is open. */
+  @state() private _showOriginalOpen = false
+
+  @state() private _localizeOpen = false
+  /** Multi-select: country names the user has checked in the picker. */
+  @state() private _localizeSelected: Set<string> = new Set()
+  @state() private _localizeFilter = ''
 
   /** Auto-close the selection toolbar when the user collapses or moves the
    *  selection away. Skipped while an AI rewrite is in flight (the rewrite
@@ -5221,14 +6317,12 @@ class FFApp extends LitElement {
         range.insertNode(frag)
 
         this._pushUndo()
-        // Sync output from the editable's current state.
-        if (this.contentType === 'article') {
-          this.output = htmlToMarkdown(editable.innerHTML)
-        } else {
-          // For JSON-backed types we drive a real blur so the field-specific
-          // handler runs (e.g., _updateCardField, _updateChecklistItem, etc.).
-          editable.dispatchEvent(new FocusEvent('blur', { bubbles: true }))
-        }
+        // Sync output by dispatching blur so the per-surface commit handler
+        // runs. For articles this routes to _setArticleBody / _setArticleTitle
+        // (which preserve the other half — the title and body live in two
+        // separate contenteditables). For JSON-backed types it runs the
+        // field-specific handler (_updateCardField, _updateChecklistItem, …).
+        editable.dispatchEvent(new FocusEvent('blur', { bubbles: true }))
         this.isDirty = true
         this._closeRewrite()
         return
@@ -5935,9 +7029,8 @@ class FFApp extends LitElement {
           <div class="flex justify-end gap-2">
             <button @click=${() => this._closeKeyPrompt()}
               class="text-[12px] text-gray-500 hover:text-gray-700 px-3 py-1.5">Cancel</button>
-            <button @click=${() => this._saveApiKey()}
-              ?disabled=${!this.keyDraft.trim()}
-              class="text-[12px] font-semibold px-4 py-2 rounded-lg bg-[#063853] hover:bg-[#04293D] text-white disabled:opacity-40">Save and generate</button>
+            <ff-brand-button @click=${() => this._saveApiKey()}
+              ?disabled=${!this.keyDraft.trim()}>Save and generate</ff-brand-button>
           </div>
         </div>
       </div>
@@ -6003,6 +7096,16 @@ function domToMarkdown(node: Node): string {
 function htmlToMarkdown(htmlStr: string): string {
   const tmp = document.createElement('div')
   tmp.innerHTML = htmlStr
+  // Strip localization overlay markup so it doesn't bleed into content_markdown
+  // on blur. .ff-q-card cards are inserted display-only; .adapt spans are
+  // visual underlines whose text content should survive without the wrapper.
+  for (const card of Array.from(tmp.querySelectorAll('.ff-q-card'))) {
+    card.parentNode?.removeChild(card)
+  }
+  for (const adapt of Array.from(tmp.querySelectorAll('.adapt'))) {
+    const text = document.createTextNode(adapt.textContent ?? '')
+    adapt.parentNode?.replaceChild(text, adapt)
+  }
   return Array.from(tmp.childNodes).map(domToMarkdown).join('').trim()
 }
 

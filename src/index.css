@@ -3,7 +3,17 @@
 @tailwind utilities;
 
 @layer base {
-  html, body, ff-app { height: 100%; display: block; }
+  /* Force light mode app-wide. The app is intentionally not themed — without
+     this opt-out, browsers in system dark mode darken the html/body
+     defaults and bleed through translucent backgrounds (e.g. the gate's
+     gray-50/40 gradient) as a dim gray cast. */
+  :root { color-scheme: light; }
+  html, body, ff-app {
+    height: 100%;
+    display: block;
+    background-color: #ffffff;
+    color: #1a1a1a;
+  }
   body {
     -webkit-font-smoothing: antialiased;
     font-family: 'Lato', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
@@ -176,3 +186,145 @@ mark.ff-highlight, .ff-highlight {
   100% { opacity: 1; transform: translateY(0) scale(1); }
 }
 .ff-cameo-pop { animation: ffcameo-pop 0.4s cubic-bezier(.4, .8, .5, 1) both; transform-origin: bottom right; }
+
+/* ── Pen-draw loader (shown while AI streams JSON-backed types) ─────────── */
+@keyframes ff-pen-draw {
+  0%   { stroke-dashoffset: 80; }
+  60%, 100% { stroke-dashoffset: 0; }
+}
+@keyframes ff-pen-move {
+  0%   { transform: translateX(0); }
+  60%, 100% { transform: translateX(56px); }
+}
+@keyframes ff-pen-fade {
+  0%, 60% { opacity: 1; }
+  90%, 100% { opacity: 0; }
+}
+.ff-pen-stage { position: relative; display: inline-flex; }
+.ff-pen-line {
+  stroke: #7c70e3; stroke-width: 2; stroke-linecap: round;
+  stroke-dasharray: 80;
+  animation: ff-pen-draw 2s ease-in-out infinite, ff-pen-fade 2s ease-in-out infinite;
+}
+.ff-pen-tip {
+  animation: ff-pen-move 2s ease-in-out infinite;
+  transform-origin: center;
+}
+
+/* ── Localization: inline adaptation underlines ──────────────────────────── */
+/* Phrase the AI adapted from the source. Always-visible chip to the right
+   shows the original `from` value via ::after so the demo reads cleanly
+   without a hover step. */
+.adapt {
+  text-decoration: underline;
+  text-decoration-color: #7c70e3;
+  text-decoration-style: dotted;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+  text-decoration-skip-ink: none;
+}
+.adapt::after {
+  content: attr(data-from);
+  display: inline-block;
+  vertical-align: baseline;
+  margin: 0 0.15em 0 0.35em;
+  padding: 0.05em 0.5em;
+  font-size: 0.78em;
+  font-weight: 600;
+  font-style: normal;
+  letter-spacing: 0;
+  color: #5b48d6;
+  background: #efedfb;
+  border: 1px solid rgba(124, 112, 227, 0.18);
+  border-radius: 9999px;
+  white-space: nowrap;
+  text-decoration: none;
+  cursor: default;
+  user-select: none;
+}
+
+/* ── Localization: inline question cards ─────────────────────────────────── */
+/* Amber, non-editable, slots between paragraphs. */
+.ff-q-card {
+  display: block;
+  position: relative;
+  margin: 1.25rem 0;
+  padding: 0.85rem 1rem 0.85rem 1.15rem;
+  background: #FFF8EB;
+  border: 1px solid #F4DCA9;
+  border-left: 3px solid #BA7517;
+  border-radius: 0.65rem;
+  font-size: 13.5px;
+  line-height: 1.5;
+}
+.ff-q-card[data-resolved="true"] {
+  background: #F4F4F4;
+  border-color: #E0E0E0;
+  border-left-color: #9CA3AF;
+}
+.ff-q-card .ff-q-head {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #8A5510;
+  margin-bottom: 0.35rem;
+}
+.ff-q-card[data-resolved="true"] .ff-q-head { color: #4B5563; }
+.ff-q-card .ff-q-text {
+  color: #1f2937;
+  margin: 0 0 0.7rem 0;
+  font-style: normal;
+}
+.ff-q-card .ff-q-reply {
+  display: flex;
+  align-items: stretch;
+  gap: 0.4rem;
+  margin-top: 0.45rem;
+}
+.ff-q-card .ff-q-input {
+  flex: 1;
+  min-width: 0;
+  padding: 0.4rem 0.65rem;
+  font-size: 12.5px;
+  background: #ffffff;
+  border: 1px solid #E5C58A;
+  border-radius: 0.4rem;
+  outline: none;
+  color: #1f2937;
+}
+.ff-q-card .ff-q-input:focus {
+  border-color: #BA7517;
+  box-shadow: 0 0 0 3px rgba(186, 117, 23, 0.18);
+}
+.ff-q-card .ff-q-resolved {
+  margin-top: 0.45rem;
+  padding: 0.4rem 0.65rem;
+  font-size: 12.5px;
+  background: #ffffff;
+  border: 1px solid #E0E0E0;
+  border-radius: 0.4rem;
+  color: #374151;
+}
+.ff-q-card .ff-q-spark {
+  width: 12px;
+  height: 12px;
+  flex: 0 0 auto;
+}
+
+/* ── Localization tab drafting indicator ─────────────────────────────────── */
+@keyframes ff-loc-dot-pulse {
+  0%, 100% { opacity: 0.35; transform: scale(0.85); }
+  50%      { opacity: 1; transform: scale(1.1); }
+}
+.ff-loc-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 9999px;
+  background: #7c70e3;
+  animation: ff-loc-dot-pulse 1s ease-in-out infinite;
+}
